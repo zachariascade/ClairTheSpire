@@ -8,11 +8,25 @@ import {
   type AttackId,
   type AttackPattern,
 } from "../game/combat/attackPatterns";
-import { cardDefinitions, type CardDefinition, type CardPresentationDamage, type CardPresentationStep } from "../game/combat/cards";
-import { getActiveEnemy } from "../game/combat/enemies";
+import {
+  cardDefinitions,
+  getCardPlayBlockReason,
+  type CardDefinition,
+  type CardPresentationDamage,
+  type CardPresentationStep,
+} from "../game/combat/cards";
+import {
+  defaultEnemySelection,
+  enemyDefinitions,
+  enemyOrder,
+  getActiveEnemy,
+  maxScenarioEnemies,
+  normalizeEnemySelection,
+  type EnemyDefinitionId,
+} from "../game/combat/enemies";
 import { combatReducer, createInitialCombatState, getReactionTimingModifiers } from "../game/combat/reducer";
 import { getStatusStacks, hasStatus, type StatusCollection, type StatusId } from "../game/combat/statuses";
-import type { CombatCard, EnemyPhaseSummary, ReactionResult } from "../game/combat/types";
+import type { CombatCard, EnemyCombatant, EnemyPhaseSummary, ReactionResult } from "../game/combat/types";
 import { playSfx, preloadSfx } from "../game/audio/audioManager";
 import { characterDefinitions, characterOrder } from "../game/characters/definitions";
 import {
@@ -22,6 +36,8 @@ import {
 } from "../game/characters/perfection";
 import { stanceRules } from "../game/characters/stances";
 import type { CharacterId, CharacterMechanicState } from "../game/characters/types";
+import { relicDefinitions } from "../game/relics/definitions";
+import type { PlayerRelic } from "../game/relics/types";
 import { PhaserBattlefield, type PhaserBattlefieldHandle } from "./PhaserBattlefield";
 import { TargetingOverlay } from "./TargetingOverlay";
 
@@ -59,6 +75,7 @@ type AppRoute = "root" | "battle";
 type UrlSelection = {
   characterId: CharacterId;
   backgroundId: string;
+  enemyIds: EnemyDefinitionId[];
 };
 type StatusDisplayDefinition = {
   description: string;
@@ -97,6 +114,7 @@ const soundtrack = {
 const defaultUrlSelection: UrlSelection = {
   characterId: "perfector",
   backgroundId: backgroundOptions[0].id,
+  enemyIds: defaultEnemySelection,
 };
 const statusDisplayDefinitions: Record<StatusId, StatusDisplayDefinition> = {
   focus: {
@@ -157,6 +175,24 @@ const normalizeCharacterId = (value: string | null): CharacterId | null => {
 const isBackgroundId = (value: string | null): value is string =>
   value !== null && backgroundOptions.some((background) => background.id === value);
 
+const normalizeEnemyId = (value: string): EnemyDefinitionId | null =>
+  value in enemyDefinitions ? (value as EnemyDefinitionId) : null;
+
+const readEnemySelection = (params: URLSearchParams): EnemyDefinitionId[] => {
+  const rawEnemies = params.get("enemies");
+
+  if (!rawEnemies) {
+    return defaultUrlSelection.enemyIds;
+  }
+
+  return normalizeEnemySelection(
+    rawEnemies
+      .split(",")
+      .map((enemyId) => normalizeEnemyId(enemyId.trim()))
+      .filter((enemyId): enemyId is EnemyDefinitionId => enemyId !== null),
+  );
+};
+
 const readUrlSelection = (): UrlSelection => {
   const params = new URLSearchParams(window.location.search);
   const character = params.get("character");
@@ -165,6 +201,7 @@ const readUrlSelection = (): UrlSelection => {
   return {
     characterId: normalizeCharacterId(character) ?? defaultUrlSelection.characterId,
     backgroundId: isBackgroundId(scene) ? scene : defaultUrlSelection.backgroundId,
+    enemyIds: readEnemySelection(params),
   };
 };
 
@@ -190,6 +227,7 @@ const writeUrlSelection = (selection: UrlSelection, route: AppRoute, mode: "push
   url.pathname = getRoutePath(route);
   url.searchParams.set("character", selection.characterId);
   url.searchParams.set("scene", selection.backgroundId);
+  url.searchParams.set("enemies", normalizeEnemySelection(selection.enemyIds).join(","));
   url.searchParams.delete("screen");
 
   if (mode === "push") {
@@ -419,17 +457,22 @@ export function App() {
   const initialRoute = useMemo(getRoute, []);
   const [state, dispatch] = useReducer(
     combatReducer,
-    initialUrlSelection.characterId,
+    {
+      characterId: initialUrlSelection.characterId,
+      enemyIds: initialUrlSelection.enemyIds,
+    },
     createInitialCombatState,
   );
   const [selectedCharacterId, setSelectedCharacterId] = useState<CharacterId>(initialUrlSelection.characterId);
+  const [selectedEnemyIds, setSelectedEnemyIds] = useState<EnemyDefinitionId[]>(initialUrlSelection.enemyIds);
   const [selectedBackgroundId, setSelectedBackgroundId] = useState(initialUrlSelection.backgroundId);
   const [route, setRoute] = useState<AppRoute>(initialRoute);
   const [enemyRect, setEnemyRect] = useState<DOMRect | null>(null);
+  const [enemyRects, setEnemyRects] = useState<Record<string, DOMRect>>({});
   const [playerRect, setPlayerRect] = useState<DOMRect | null>(null);
   const [cardRects, setCardRects] = useState<CardRects>({});
   const [targetPointer, setTargetPointer] = useState<PointerPoint | null>(null);
-  const [isEnemyTargetHovered, setIsEnemyTargetHovered] = useState(false);
+  const [hoveredEnemyId, setHoveredEnemyId] = useState<string | null>(null);
   const [isPlayerTargetHovered, setIsPlayerTargetHovered] = useState(false);
   const [targetCornersExiting, setTargetCornersExiting] = useState(false);
   const [enemyFeedback, setEnemyFeedback] = useState<ActorFeedback | null>(null);
@@ -459,32 +502,32 @@ export function App() {
   const isAimingEnemyCard = selectedDefinition?.target === "enemy";
   const isAimingPlayerCard = selectedDefinition?.target === "self";
   const isAimingTargetedCard = isAimingEnemyCard || isAimingPlayerCard;
-  const targetBounds = isAimingEnemyCard ? enemyRect : isAimingPlayerCard ? playerRect : null;
+  const hoveredEnemy = hoveredEnemyId ? state.enemies.find((enemy) => enemy.id === hoveredEnemyId) ?? null : null;
+  const hoveredEnemyRect = hoveredEnemyId ? enemyRects[hoveredEnemyId] ?? null : null;
+  const targetBounds = isAimingEnemyCard ? hoveredEnemyRect ?? enemyRect : isAimingPlayerCard ? playerRect : null;
+  const isEnemyTargetHovered = hoveredEnemyId !== null;
   const isTargetHovered = isAimingEnemyCard ? isEnemyTargetHovered : isAimingPlayerCard ? isPlayerTargetHovered : false;
   const targetLabel = isAimingEnemyCard ? "enemy" : "player";
   const activeEnemy = getActiveEnemy(state);
-  const hoveredEnemyIsVulnerable = isAimingEnemyCard && isEnemyTargetHovered && hasStatus(activeEnemy.statuses, "vulnerable");
+  const turnBannerLabel = state.phase === "playerTurn" ? "Player Turn" : activeEnemy.name;
+  const hoveredEnemyIsVulnerable = isAimingEnemyCard && hoveredEnemy !== null && hasStatus(hoveredEnemy.statuses, "vulnerable");
   const currentAttackPattern = attackPatterns[activeEnemy.attackId];
-  const enemyIntentRawDamage = currentAttackPattern.hits.reduce((total, hit) => total + hit.damage, 0);
-  const enemyIntentDamage =
-    state.player.mechanic.type === "stance"
-      ? Math.round(enemyIntentRawDamage * stanceRules[state.player.mechanic.stance].damageReceived)
-      : enemyIntentRawDamage;
-  const enemyIntentDamageTone =
-    enemyIntentDamage > enemyIntentRawDamage ? "boosted" : enemyIntentDamage < enemyIntentRawDamage ? "diminished" : "normal";
-  const enemyDefenseHint = currentAttackPattern.defense === "shield" ? "Shield only" : "A to parry, S to dodge";
   const selectedBackground =
     backgroundOptions.find((background) => background.id === selectedBackgroundId) ?? backgroundOptions[0];
 
-  const startCombat = useCallback((characterId: CharacterId) => {
+  const startCombat = useCallback((characterId: CharacterId, enemyIds: EnemyDefinitionId[]) => {
+    const normalizedEnemyIds = normalizeEnemySelection(enemyIds);
+
     playSfx("ui.confirm", { volume: 0.44 });
     setSelectedCharacterId(characterId);
-    dispatch({ type: "RESET_COMBAT", characterId });
+    setSelectedEnemyIds(normalizedEnemyIds);
+    dispatch({ type: "RESET_COMBAT", characterId, enemyIds: normalizedEnemyIds });
     setRoute("battle");
     writeUrlSelection(
       {
         characterId,
         backgroundId: selectedBackgroundId,
+        enemyIds: normalizedEnemyIds,
       },
       "battle",
       "push",
@@ -494,9 +537,10 @@ export function App() {
   useEffect(() => {
     writeUrlSelection({
       characterId: selectedCharacterId,
+      enemyIds: selectedEnemyIds,
       backgroundId: selectedBackgroundId,
     }, route);
-  }, [route, selectedBackgroundId, selectedCharacterId]);
+  }, [route, selectedBackgroundId, selectedCharacterId, selectedEnemyIds]);
 
   useEffect(() => {
     preloadSfx([
@@ -539,11 +583,12 @@ export function App() {
       const nextRoute = getRoute();
 
       setSelectedCharacterId(nextSelection.characterId);
+      setSelectedEnemyIds(nextSelection.enemyIds);
       setSelectedBackgroundId(nextSelection.backgroundId);
       setRoute(nextRoute);
 
       if (nextRoute === "battle") {
-        dispatch({ type: "RESET_COMBAT", characterId: nextSelection.characterId });
+        dispatch({ type: "RESET_COMBAT", characterId: nextSelection.characterId, enemyIds: nextSelection.enemyIds });
       }
     };
 
@@ -573,23 +618,39 @@ export function App() {
   }, []);
 
   const playCard = useCallback(
-    (card: CombatCard) => {
+    (card: CombatCard, targetEnemyId?: string) => {
       const definition = cardDefinitions[card.definitionId];
-      const enemyIsVulnerable = hasStatus(activeEnemy.statuses, "vulnerable");
+      const targetEnemy = targetEnemyId ? state.enemies.find((enemy) => enemy.id === targetEnemyId) ?? activeEnemy : activeEnemy;
+      const enemyIsVulnerable = hasStatus(targetEnemy.statuses, "vulnerable");
       const presentation = resolveCardPresentation(definition, state.player.mechanic, enemyIsVulnerable);
+      if (definition.target === "enemy") {
+        battlefieldRef.current?.focusEnemy(targetEnemy.id);
+        setEnemyRect(enemyRects[targetEnemy.id] ?? enemyRect);
+      }
       playCardSfx(presentation);
       setAnimatingCardId(card.instanceId);
+      let previewEnemyHp = targetEnemy.hp;
 
       for (const step of presentation) {
         window.setTimeout(() => {
           if (step.impact) {
-            battlefieldRef.current?.playCardImpact(step.text);
+            battlefieldRef.current?.playCardImpact(step.text, targetEnemy.id);
+            const damage = Number.parseInt(step.text.replace(/[^0-9-]/g, ""), 10);
+            if (Number.isFinite(damage) && damage < 0) {
+              previewEnemyHp = Math.max(0, previewEnemyHp + damage);
+              battlefieldRef.current?.updateEnemyHud({
+                id: targetEnemy.id,
+                image: targetEnemy.image,
+                hp: previewEnemyHp,
+                maxHp: targetEnemy.maxHp,
+              });
+            }
             showActorFeedback("enemy", step.text, "damage");
             return;
           }
 
           if (step.tone !== "block") {
-            battlefieldRef.current?.showFloatingText(step.target, step.text, step.tone);
+            battlefieldRef.current?.showFloatingText(step.target, step.text, step.tone, step.target === "enemy" ? targetEnemy.id : undefined);
           }
           showActorFeedback(step.target, step.text, step.tone === "block" ? "block" : "good");
         }, step.delayMs);
@@ -599,14 +660,14 @@ export function App() {
       const resolutionDelay = Math.max(definition.target === "enemy" ? 260 : 80, finalStepDelay + 370);
 
       window.setTimeout(() => {
-        dispatch({ type: "PLAY_CARD", cardId: card.instanceId });
-        setIsEnemyTargetHovered(false);
+        dispatch({ type: "PLAY_CARD", cardId: card.instanceId, targetEnemyId });
+        setHoveredEnemyId(null);
         setIsPlayerTargetHovered(false);
         setTargetPointer(null);
         setAnimatingCardId(null);
       }, resolutionDelay);
     },
-    [activeEnemy.statuses, showActorFeedback, state.player.mechanic],
+    [activeEnemy, showActorFeedback, state.enemies, state.player.mechanic],
   );
 
   const handleCardClick = useCallback(
@@ -635,10 +696,21 @@ export function App() {
     playCard(selectedCard);
   }, [playCard, selectedCard]);
 
+  const playSelectedCardOnEnemy = useCallback(
+    (enemyId: string) => {
+      if (!selectedCard) {
+        return;
+      }
+
+      playCard(selectedCard, enemyId);
+    },
+    [playCard, selectedCard],
+  );
+
   useEffect(() => {
     if (!isAimingTargetedCard || !selectedCardRect) {
       setTargetPointer(null);
-      setIsEnemyTargetHovered(false);
+      setHoveredEnemyId(null);
       setIsPlayerTargetHovered(false);
       return;
     }
@@ -650,13 +722,18 @@ export function App() {
 
     const handlePointerMove = (event: PointerEvent) => {
       setTargetPointer({ x: event.clientX, y: event.clientY });
-      if (isAimingEnemyCard && enemyRect) {
-        const hovered =
-          event.clientX >= enemyRect.left &&
-          event.clientX <= enemyRect.right &&
-          event.clientY >= enemyRect.top &&
-          event.clientY <= enemyRect.bottom;
-        setIsEnemyTargetHovered(hovered);
+      if (isAimingEnemyCard) {
+        const hoveredEnemyEntry = state.enemies
+          .filter((enemy) => enemy.hp > 0)
+          .map((enemy) => [enemy.id, enemyRects[enemy.id]] as const)
+          .find(([, rect]) =>
+            Boolean(rect) &&
+            event.clientX >= rect.left &&
+            event.clientX <= rect.right &&
+            event.clientY >= rect.top &&
+            event.clientY <= rect.bottom,
+          );
+        setHoveredEnemyId(hoveredEnemyEntry?.[0] ?? null);
         setIsPlayerTargetHovered(false);
         return;
       }
@@ -668,13 +745,13 @@ export function App() {
           event.clientY >= playerRect.top &&
           event.clientY <= playerRect.bottom;
         setIsPlayerTargetHovered(hovered);
-        setIsEnemyTargetHovered(false);
+        setHoveredEnemyId(null);
       }
     };
 
     window.addEventListener("pointermove", handlePointerMove);
     return () => window.removeEventListener("pointermove", handlePointerMove);
-  }, [enemyRect, isAimingEnemyCard, isAimingPlayerCard, isAimingTargetedCard, playerRect, selectedCardRect]);
+  }, [enemyRects, isAimingEnemyCard, isAimingPlayerCard, isAimingTargetedCard, playerRect, selectedCardRect, state.enemies]);
 
   useEffect(() => {
     if (targetCornerExitTimerRef.current !== null) {
@@ -986,10 +1063,12 @@ export function App() {
         />
         <CharacterSelectScreen
           selectedCharacterId={selectedCharacterId}
+          selectedEnemyIds={selectedEnemyIds}
           selectedBackgroundId={selectedBackgroundId}
           onSelect={setSelectedCharacterId}
+          onSelectEnemies={setSelectedEnemyIds}
           onSelectBackground={setSelectedBackgroundId}
-          onStart={() => startCombat(selectedCharacterId)}
+          onStart={() => startCombat(selectedCharacterId, selectedEnemyIds)}
         />
       </main>
     );
@@ -1010,13 +1089,25 @@ export function App() {
           attackId={activeEnemy.attackId}
           backgroundPath={`${import.meta.env.BASE_URL}${selectedBackground.image}`}
           playerSpritePath={`${import.meta.env.BASE_URL}${characterDefinitions[state.player.characterId].image}`}
+          enemies={state.enemies}
+          activeEnemyId={state.activeEnemyId}
           onEnemyBoundsChange={setEnemyRect}
+          onEnemyBoundsListChange={setEnemyRects}
           onPlayerBoundsChange={setPlayerRect}
         />
 
         {(state.phase === "playerTurn" || state.phase === "enemyTurn") && (
-          <TurnBanner key={state.phase} label={state.phase === "playerTurn" ? "Player Turn" : "Enemy Turn"} />
+          <TurnBanner key={state.phase} label={turnBannerLabel} />
         )}
+
+        {state.enemies.map((enemy) => (
+          <EnemyBattlefieldHud
+            key={enemy.id}
+            bounds={enemyRects[enemy.id] ?? null}
+            enemy={enemy}
+            active={enemy.id === state.activeEnemyId}
+          />
+        ))}
 
         <TargetingOverlay
           activeCardRect={selectedCardRect}
@@ -1030,7 +1121,33 @@ export function App() {
           <FloatingTargetCard card={selectedCard} mechanic={state.player.mechanic} pointer={targetPointer} />
         )}
 
-        {isAimingTargetedCard && targetBounds && (
+        {isAimingEnemyCard && selectedCard && state.enemies.map((enemy) => {
+          const bounds = enemyRects[enemy.id];
+          if (!bounds || enemy.hp <= 0) {
+            return null;
+          }
+
+          const isHovered = hoveredEnemyId === enemy.id;
+          return (
+            <button
+              className={`enemy-target-button ${isHovered ? "is-armed" : ""}`}
+              key={enemy.id}
+              type="button"
+              style={{
+                left: bounds.left,
+                top: bounds.top,
+                width: bounds.width,
+                height: bounds.height,
+              }}
+              aria-label={`Play ${selectedDefinition?.name ?? "card"} on ${enemy.name}`}
+              onPointerEnter={() => setHoveredEnemyId(enemy.id)}
+              onPointerLeave={() => setHoveredEnemyId(null)}
+              onClick={() => playSelectedCardOnEnemy(enemy.id)}
+            />
+          );
+        })}
+
+        {isAimingPlayerCard && targetBounds && (
           <button
             className={`enemy-target-button ${isTargetHovered ? "is-armed" : ""}`}
             type="button"
@@ -1042,17 +1159,9 @@ export function App() {
             }}
             aria-label={`Play ${selectedDefinition?.name ?? "card"} on ${targetLabel}`}
             onPointerEnter={() => {
-              if (isAimingEnemyCard) {
-                setIsEnemyTargetHovered(true);
-                return;
-              }
               setIsPlayerTargetHovered(true);
             }}
             onPointerLeave={() => {
-              if (isAimingEnemyCard) {
-                setIsEnemyTargetHovered(false);
-                return;
-              }
               setIsPlayerTargetHovered(false);
             }}
             onClick={playSelectedCard}
@@ -1092,18 +1201,8 @@ export function App() {
             tone="red"
           />
           <CharacterMechanicHud mechanic={state.player.mechanic} />
-          <Meter label="Enemy" value={activeEnemy.hp} max={activeEnemy.maxHp} block={0} statuses={activeEnemy.statuses} tone="violet" />
         </div>
-
-        <aside className="intent-panel">
-          <span>Intent</span>
-          <strong>{activeEnemy.intent}</strong>
-          <p className={`intent-damage intent-damage-${enemyIntentDamageTone}`}>
-            Damage: <strong>{enemyIntentDamage}</strong>
-          </p>
-          <p className="phase-readout">Phase: {state.phase}</p>
-          <p>{enemyDefenseHint}</p>
-        </aside>
+        <RelicHud relics={state.player.relics} />
 
         <div className="left-rail">
           <DebugPanel
@@ -1116,7 +1215,7 @@ export function App() {
             lastEnemyPhaseSummary={state.lastEnemyPhaseSummary}
             showTimingAssist={showTimingAssist}
             onReset={() => {
-              dispatch({ type: "RESET_COMBAT", characterId: state.player.characterId });
+              dispatch({ type: "RESET_COMBAT", characterId: state.player.characterId, enemyIds: selectedEnemyIds });
             }}
             onSetAttack={(attackId) => dispatch({ type: "SET_NEXT_ATTACK", attackId })}
             onToggleCollapsed={() => setDebugCollapsed((value) => !value)}
@@ -1145,7 +1244,11 @@ export function App() {
                 mechanic={state.player.mechanic}
                 selected={state.selectedCardId === card.instanceId}
                 enemyIsVulnerablePreview={state.selectedCardId === card.instanceId && hoveredEnemyIsVulnerable}
-                disabled={state.phase !== "playerTurn" || state.player.energy < cardDefinitions[card.definitionId].cost}
+                disabled={
+                  state.phase !== "playerTurn" ||
+                  state.player.energy < cardDefinitions[card.definitionId].cost ||
+                  Boolean(getCardPlayBlockReason(cardDefinitions[card.definitionId], state.player.mechanic))
+                }
                 onBoundsChange={(rect) => setCardRects((rects) => ({ ...rects, [card.instanceId]: rect }))}
                 onPlay={() => handleCardClick(card)}
               />
@@ -1168,7 +1271,10 @@ export function App() {
         {(state.phase === "won" || state.phase === "lost") && (
           <div className="result-panel">
             <strong>{state.phase === "won" ? "Victory" : "Defeat"}</strong>
-            <button type="button" onClick={() => dispatch({ type: "RESET_COMBAT", characterId: state.player.characterId })}>
+            <button
+              type="button"
+              onClick={() => dispatch({ type: "RESET_COMBAT", characterId: state.player.characterId, enemyIds: selectedEnemyIds })}
+            >
               Reset
             </button>
             <button
@@ -1179,6 +1285,7 @@ export function App() {
                   {
                     characterId: selectedCharacterId,
                     backgroundId: selectedBackgroundId,
+                    enemyIds: selectedEnemyIds,
                   },
                   "root",
                   "push",
@@ -1255,31 +1362,52 @@ function MusicToggle({
 
 function CharacterSelectScreen({
   selectedCharacterId,
+  selectedEnemyIds,
   selectedBackgroundId,
   onSelect,
+  onSelectEnemies,
   onSelectBackground,
   onStart,
 }: {
   selectedCharacterId: CharacterId;
+  selectedEnemyIds: EnemyDefinitionId[];
   selectedBackgroundId: string;
   onSelect: (characterId: CharacterId) => void;
+  onSelectEnemies: (enemyIds: EnemyDefinitionId[]) => void;
   onSelectBackground: (backgroundId: string) => void;
   onStart: () => void;
 }) {
+  const normalizedEnemyIds = normalizeEnemySelection(selectedEnemyIds);
+  const enemySelectionFull = normalizedEnemyIds.length >= maxScenarioEnemies;
   const selectedBackgroundIndex = Math.max(
     0,
     backgroundOptions.findIndex((background) => background.id === selectedBackgroundId),
   );
   const selectedBackground = backgroundOptions[selectedBackgroundIndex] ?? backgroundOptions[0];
+  const enemyCounts = normalizedEnemyIds.reduce<Record<string, number>>((counts, enemyId) => {
+    counts[enemyId] = (counts[enemyId] ?? 0) + 1;
+    return counts;
+  }, {});
   const selectRelativeBackground = (offset: number) => {
     const nextIndex = (selectedBackgroundIndex + offset + backgroundOptions.length) % backgroundOptions.length;
     onSelectBackground(backgroundOptions[nextIndex].id);
+  };
+  const addEnemy = (enemyId: EnemyDefinitionId) => {
+    if (enemySelectionFull) {
+      return;
+    }
+
+    onSelectEnemies([...normalizedEnemyIds, enemyId]);
+  };
+  const removeEnemyAt = (indexToRemove: number) => {
+    const nextEnemyIds = normalizedEnemyIds.filter((_, index) => index !== indexToRemove);
+    onSelectEnemies(normalizeEnemySelection(nextEnemyIds));
   };
 
   return (
     <section className="character-select" aria-label="Choose character">
       <div className="character-select-header">
-        <span>Choose Character</span>
+        <span>Build Scenario</span>
         <button type="button" onClick={onStart}>
           Start
         </button>
@@ -1316,9 +1444,62 @@ function CharacterSelectScreen({
         })}
       </div>
 
-      <section className="background-gallery" aria-label="Choose background">
+      <section className="enemy-selection" aria-label="Choose enemies">
+        <div className="enemy-selection-header">
+          <span>Enemies</span>
+          <strong>{normalizedEnemyIds.length}/{maxScenarioEnemies}</strong>
+        </div>
+
+        <div className="enemy-options">
+          {enemyOrder.map((enemyId) => {
+            const enemy = enemyDefinitions[enemyId];
+            const count = enemyCounts[enemyId] ?? 0;
+
+            return (
+              <button
+                className={`enemy-option ${count > 0 ? "is-selected" : ""}`}
+                key={enemy.id}
+                type="button"
+                disabled={enemySelectionFull}
+                onClick={() => addEnemy(enemy.id)}
+              >
+                <span className="enemy-option-count" aria-label={`${count} selected`}>
+                  {count}
+                </span>
+                <span className="enemy-option-copy">
+                  <strong>{enemy.name}</strong>
+                  <span>{enemy.maxHp} HP | {attackPatterns[enemy.attackId].name}</span>
+                  <span>{enemy.description}</span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="selected-enemy-list" aria-label="Selected enemies">
+          {normalizedEnemyIds.map((enemyId, index) => {
+            const enemy = enemyDefinitions[enemyId];
+
+            return (
+              <button
+                className="selected-enemy"
+                key={`${enemyId}-${index}`}
+                type="button"
+                disabled={normalizedEnemyIds.length <= 1}
+                onClick={() => removeEnemyAt(index)}
+                aria-label={`Remove ${enemy.name}`}
+              >
+                <span>{index + 1}</span>
+                <strong>{enemy.name}</strong>
+              </button>
+            );
+          })}
+        </div>
+      </section>
+
+      <section className="background-gallery" aria-label="Choose scene">
         <div className="background-gallery-header">
-          <span>Background</span>
+          <span>Scene</span>
           <strong>{selectedBackground.name}</strong>
         </div>
 
@@ -1401,6 +1582,82 @@ function CharacterMechanicHud({ mechanic }: { mechanic: CharacterMechanicState }
         <strong>{stance.label}</strong>
       </div>
       <p>{stance.helperText}</p>
+    </div>
+  );
+}
+
+function EnemyBattlefieldHud({
+  enemy,
+  bounds,
+  active,
+}: {
+  enemy: EnemyCombatant;
+  bounds: DOMRect | null;
+  active: boolean;
+}) {
+  if (!bounds || enemy.hp <= 0) {
+    return null;
+  }
+
+  const ratio = Math.max(0, Math.min(1, enemy.hp / enemy.maxHp));
+  const activeStatuses = getActiveStatusEntries(enemy.statuses);
+
+  return (
+    <div
+      className={`enemy-battlefield-hud ${active ? "is-active" : ""}`}
+      style={{
+        left: bounds.left + bounds.width / 2,
+        top: bounds.top + bounds.height - 78,
+      }}
+      aria-label={`${enemy.name} HP ${enemy.hp} of ${enemy.maxHp}`}
+    >
+      <span className="enemy-battlefield-hud-name">{enemy.name}</span>
+      <div className="enemy-battlefield-hud-track">
+        <span className="enemy-battlefield-hud-value">{enemy.hp}/{enemy.maxHp}</span>
+        <div className="enemy-battlefield-hud-fill" style={{ width: `${ratio * 100}%` }} />
+      </div>
+      {activeStatuses.length > 0 && (
+        <StatusChips className="enemy-battlefield-status-row" label={`${enemy.name} statuses`} statuses={activeStatuses} />
+      )}
+    </div>
+  );
+}
+
+function RelicHud({ relics }: { relics: PlayerRelic[] }) {
+  if (relics.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="relic-hud" aria-label="Relics">
+      {relics.map((relic) => {
+        const definition = relicDefinitions[relic.id];
+        const progressMax = relic.id === "steady-pulse" ? 3 : 0;
+
+        return (
+          <button
+            className={`relic-chip relic-chip-${definition.rarity}`}
+            key={relic.id}
+            type="button"
+            aria-label={`${definition.name}. ${definition.description}`}
+          >
+            <span className="relic-icon-shell" key={`${relic.id}-${relic.pulse}`}>
+              <span className="relic-icon">{definition.icon}</span>
+            </span>
+            {progressMax > 0 && <span className="relic-progress">{relic.progress}/{progressMax}</span>}
+            <span className="relic-tooltip" role="tooltip">
+              <span className="relic-tooltip-title">{definition.name}</span>
+              <span className={`relic-tooltip-rarity relic-tooltip-rarity-${definition.rarity}`}>{definition.rarity} relic</span>
+              <span className="relic-tooltip-copy">{definition.description}</span>
+              {progressMax > 0 && (
+                <span className="relic-tooltip-progress">
+                  Progress: {relic.progress}/{progressMax}
+                </span>
+              )}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -1818,9 +2075,7 @@ function Meter({
   statuses?: StatusCollection;
   tone: "red" | "gold" | "violet";
 }) {
-  const activeStatuses = statuses
-    ? Object.values(statuses).filter((status): status is NonNullable<typeof status> => Boolean(status) && status.stacks > 0)
-    : [];
+  const activeStatuses = getActiveStatusEntries(statuses);
 
   return (
     <div className={`meter meter-${tone}`}>
@@ -1842,31 +2097,50 @@ function Meter({
         <div className="meter-fill" style={{ width: `${(value / max) * 100}%` }} />
       </div>
       {activeStatuses.length > 0 && (
-        <div className="status-row" aria-label={`${label} statuses`}>
-          {activeStatuses.map((status) => {
-            const definition = statusDisplayDefinitions[status.id];
-            const title = `${definition.label}: ${definition.description}`;
-
-            return (
-              <span
-                className={`status-chip status-chip-${definition.tone}`}
-                key={status.id}
-                aria-label={`${title} ${status.stacks} stack${status.stacks === 1 ? "" : "s"}`}
-                tabIndex={0}
-              >
-                <span>{definition.shortLabel}</span>
-                {status.stacks > 1 && <strong>{status.stacks}</strong>}
-                <span className="card-keyword-tooltip status-tooltip" role="tooltip">
-                  <span className="card-keyword-tooltip-row">
-                    <strong>{definition.label}</strong>
-                    <span>{definition.description}</span>
-                  </span>
-                </span>
-              </span>
-            );
-          })}
-        </div>
+        <StatusChips label={`${label} statuses`} statuses={activeStatuses} />
       )}
+    </div>
+  );
+}
+
+const getActiveStatusEntries = (statuses?: StatusCollection) =>
+  statuses
+    ? Object.values(statuses).filter((status): status is NonNullable<typeof status> => Boolean(status) && status.stacks > 0)
+    : [];
+
+function StatusChips({
+  className,
+  label,
+  statuses,
+}: {
+  className?: string;
+  label: string;
+  statuses: ReturnType<typeof getActiveStatusEntries>;
+}) {
+  return (
+    <div className={`status-row ${className ?? ""}`} aria-label={label}>
+      {statuses.map((status) => {
+        const definition = statusDisplayDefinitions[status.id];
+        const title = `${definition.label}: ${definition.description}`;
+
+        return (
+          <span
+            className={`status-chip status-chip-${definition.tone}`}
+            key={status.id}
+            aria-label={`${title} ${status.stacks} stack${status.stacks === 1 ? "" : "s"}`}
+            tabIndex={0}
+          >
+            <span>{definition.shortLabel}</span>
+            {status.stacks > 1 && <strong>{status.stacks}</strong>}
+            <span className="card-keyword-tooltip status-tooltip" role="tooltip">
+              <span className="card-keyword-tooltip-row">
+                <strong>{definition.label}</strong>
+                <span>{definition.description}</span>
+              </span>
+            </span>
+          </span>
+        );
+      })}
     </div>
   );
 }

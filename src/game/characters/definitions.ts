@@ -42,6 +42,8 @@ export const characterDefinitions: Record<CharacterId, CharacterDefinition> = {
       "measure",
       "riposte-line",
       "flow-state",
+      "finale-thrust",
+      "perfect-tempo",
       "guard",
       "measure",
     ],

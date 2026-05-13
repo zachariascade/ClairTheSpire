@@ -1,5 +1,5 @@
 import type { CombatEffect } from "./cards";
-import { getActiveEnemy, updateActiveEnemy } from "./enemies";
+import { getActiveEnemy, getNextLivingEnemyId, updateActiveEnemy, updateEnemy } from "./enemies";
 import { addStatus, hasStatus } from "./statuses";
 import type { CombatState } from "./types";
 import type { StanceId } from "../characters/types";
@@ -33,16 +33,19 @@ export const dealDamage = (state: CombatState, target: "enemy" | "player", amoun
     const baseDamage = applyPerfectionDamageDealt(state.player.mechanic, applyStanceDamageDealt(state, amount));
     const damage = hasStatus(activeEnemy.statuses, "vulnerable") ? Math.round(baseDamage * 1.5) : baseDamage;
     const nextHp = clamp(activeEnemy.hp - damage, 0, activeEnemy.maxHp);
+    const nextActiveEnemyId = nextHp <= 0 ? getNextLivingEnemyId(state, activeEnemy.id) : state.activeEnemyId;
     const nextState = gainPerfectionFromEnemyHit(
       {
         ...state,
-        phase: nextHp <= 0 ? "won" : state.phase,
+        activeEnemyId: nextActiveEnemyId ?? state.activeEnemyId,
+        phase: nextHp <= 0 && !nextActiveEnemyId ? "won" : state.phase,
       },
       activeEnemy.hp > 0 && damage > 0 ? PERFECTION_GAIN_ON_ENEMY_HIT : 0,
     );
 
-    return updateActiveEnemy(
+    return updateEnemy(
       nextState,
+      activeEnemy.id,
       (enemy) => ({
         ...enemy,
         hp: nextHp,
@@ -68,6 +71,14 @@ export const gainBlock = (state: CombatState, amount: number): CombatState => ({
   player: {
     ...state.player,
     block: state.player.block + amount,
+  },
+});
+
+export const gainEnergy = (state: CombatState, amount: number): CombatState => ({
+  ...state,
+  player: {
+    ...state.player,
+    energy: state.player.energy + amount,
   },
 });
 
@@ -121,6 +132,10 @@ const applyEffect = (state: CombatState, effect: CombatEffect): CombatState => {
 
   if (effect.type === "gainBlock") {
     nextState = gainBlock(nextState, effect.amount);
+  }
+
+  if (effect.type === "gainEnergy") {
+    nextState = gainEnergy(nextState, effect.amount);
   }
 
   if (effect.type === "applyStatus") {

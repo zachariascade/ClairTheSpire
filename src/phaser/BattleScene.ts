@@ -1,40 +1,51 @@
 import Phaser from "phaser";
 import { attackPatterns, type AttackId, type AttackPattern } from "../game/combat/attackPatterns";
-import type { CombatPhase } from "../game/combat/types";
+import type { CombatPhase, EnemyCombatant } from "../game/combat/types";
 
 type EffectTarget = "player" | "enemy";
 type EffectTone = "good" | "bad" | "neutral" | "damage" | "block";
+type EnemySceneState = Pick<EnemyCombatant, "id" | "image" | "hp" | "maxHp">;
+type EnemyActorTarget = {
+  actor: Phaser.GameObjects.Container;
+  home: { x: number; y: number };
+};
 
 export type BattleSceneEvents = {
   onEnemyBoundsChange: (bounds: DOMRect) => void;
+  onEnemyBoundsListChange: (bounds: Record<string, DOMRect>) => void;
   onPlayerBoundsChange: (bounds: DOMRect) => void;
 };
 
 type SceneData = BattleSceneEvents & {
   backgroundPath?: string;
+  activeEnemyId?: string;
+  enemies?: EnemySceneState[];
   playerSpritePath?: string;
 };
 
 const BATTLEFIELD_BACKGROUND_KEY = "battlefield-background";
 const PLAYER_SPRITE_KEY = "gutz-player";
-const ENEMY_SPRITE_KEY = "griffith-enemy";
 const publicAssetPath = (filename: string) => `${import.meta.env.BASE_URL}${filename}`;
-const ENEMY_SPRITE_PATH = publicAssetPath("griffith.png");
+const getEnemySpriteKey = (image: string) => `enemy-sprite-${image}`;
 const ACTOR_SPRITE_MAX_WIDTH = 220;
 const ACTOR_SPRITE_MAX_HEIGHT = 300;
 const ACTOR_BOUNDS_WIDTH = 210;
 const ACTOR_BOUNDS_HEIGHT = 315;
-const PLAYER_BOTTOM_OFFSET = 315;
-const ENEMY_BOTTOM_OFFSET = 330;
+const PLAYER_BOTTOM_OFFSET = 245;
+const ENEMY_BOTTOM_OFFSET = 270;
 const DEFENSE_ANIMATION_COOLDOWN_MS = 520;
+const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
 export class BattleScene extends Phaser.Scene {
   private background?: Phaser.GameObjects.Image;
   private atmosphere?: Phaser.GameObjects.Rectangle;
   private enemy!: Phaser.GameObjects.Container;
+  private enemies: Phaser.GameObjects.Container[] = [];
+  private enemyHealthHuds = new Map<string, Phaser.GameObjects.Container>();
   private player!: Phaser.GameObjects.Container;
   private weapon?: Phaser.GameObjects.Rectangle;
   private enemyHome = { x: 0, y: 0 };
+  private enemyHomes: Array<{ x: number; y: number }> = [];
   private playerHome = { x: 0, y: 0 };
   private attackCue?: Phaser.GameObjects.Text;
   private attackTimers: Phaser.Time.TimerEvent[] = [];
@@ -43,6 +54,11 @@ export class BattleScene extends Phaser.Scene {
   private playerSpritePath = publicAssetPath("gutz.png");
   private phase: CombatPhase = "playerTurn";
   private attackId: AttackId = "quick-slash";
+  private enemyCount = 1;
+  private activeEnemyId = "";
+  private activeEnemyIndex = 0;
+  private enemyStates: EnemySceneState[] = [];
+  private sceneReady = false;
   private attackRunning = false;
   private parryReadyAt = 0;
   private dodgeReadyAt = 0;
@@ -55,12 +71,19 @@ export class BattleScene extends Phaser.Scene {
     this.eventsBridge = data;
     this.backgroundPath = data.backgroundPath ?? publicAssetPath("castle-background.png");
     this.playerSpritePath = data.playerSpritePath ?? publicAssetPath("gutz.png");
+    this.configureEnemyFormation(data.enemies ?? [], data.activeEnemyId ?? "");
   }
 
   preload() {
     this.load.image(BATTLEFIELD_BACKGROUND_KEY, this.backgroundPath);
     this.load.image(PLAYER_SPRITE_KEY, this.playerSpritePath);
-    this.load.image(ENEMY_SPRITE_KEY, ENEMY_SPRITE_PATH);
+
+    for (const enemy of this.enemyStates) {
+      const textureKey = getEnemySpriteKey(enemy.image);
+      if (!this.textures.exists(textureKey)) {
+        this.load.image(textureKey, publicAssetPath(enemy.image));
+      }
+    }
   }
 
   create() {
@@ -77,10 +100,12 @@ export class BattleScene extends Phaser.Scene {
     this.atmosphere.setDepth(-19);
 
     this.playerHome = { x: width * 0.25, y: height - PLAYER_BOTTOM_OFFSET };
-    this.enemyHome = { x: width * 0.75, y: height - ENEMY_BOTTOM_OFFSET };
+    this.enemyHomes = this.getEnemyHomes(this.enemyCount);
+    this.enemyHome = this.enemyHomes[this.activeEnemyIndex] ?? this.enemyHomes[0];
 
     this.player = this.createPlayerActor(this.playerHome.x, this.playerHome.y);
-    this.enemy = this.createEnemyActor(this.enemyHome.x, this.enemyHome.y);
+    this.sceneReady = true;
+    this.syncEnemyFormation();
 
     this.input.keyboard?.on("keydown-A", () => this.parryPlayer());
     this.input.keyboard?.on("keydown-S", () => this.dodgePlayer());
@@ -92,12 +117,42 @@ export class BattleScene extends Phaser.Scene {
     this.attackId = attackId;
   }
 
+  setEnemies(enemies: EnemySceneState[], activeEnemyId: string) {
+    this.configureEnemyFormation(enemies, activeEnemyId);
+    this.syncEnemyFormation();
+  }
+
+  focusEnemy(enemyId: string) {
+    const nextIndex = this.enemyStates.findIndex((enemy) => enemy.id === enemyId);
+    if (nextIndex < 0) {
+      return;
+    }
+
+    this.activeEnemyId = enemyId;
+    this.activeEnemyIndex = nextIndex;
+    this.syncEnemyFormation();
+  }
+
+  updateEnemyHud(enemy: EnemySceneState) {
+    const index = this.enemyStates.findIndex((candidate) => candidate.id === enemy.id);
+    if (index < 0 || !this.enemies[index]) {
+      return;
+    }
+
+    this.enemyStates = this.enemyStates.map((candidate) => (candidate.id === enemy.id ? enemy : candidate));
+    this.syncEnemyHealthHud(enemy, index, index === this.activeEnemyIndex);
+  }
+
   setPhase(phase: CombatPhase) {
     if (this.phase === phase && phase !== "enemyAttack") {
       return;
     }
 
     this.phase = phase;
+
+    if (!this.sceneReady) {
+      return;
+    }
 
     if (phase === "enemyAttack" && !this.attackRunning) {
       this.runAttack(attackPatterns[this.attackId]);
@@ -114,18 +169,20 @@ export class BattleScene extends Phaser.Scene {
     this.dodgeReadyAt = 0;
   }
 
-  flashEnemy() {
-    this.tweens.killTweensOf(this.enemy);
-    this.enemy.setAlpha(1);
-    this.enemy.setPosition(this.enemyHome.x, this.enemyHome.y);
-    this.enemy.setScale(1);
+  flashEnemy(enemyId?: string) {
+    const { actor, home } = this.getEnemyActorTarget(enemyId);
+
+    this.tweens.killTweensOf(actor);
+    actor.setAlpha(1);
+    actor.setPosition(home.x, home.y);
+    actor.setScale(1);
     this.showActorWash("enemy", 0xf07a6a);
-    this.showImpactBurst(this.enemy.x - 18, this.enemy.y - 64, 0xf07a6a);
+    this.showImpactBurst(actor.x - 18, actor.y - 64, 0xf07a6a);
 
     this.tweens.add({
-      targets: this.enemy,
-      x: this.enemyHome.x + 46,
-      y: this.enemyHome.y - 8,
+      targets: actor,
+      x: home.x + 46,
+      y: home.y - 8,
       scaleX: 1.2,
       scaleY: 0.88,
       alpha: 0.62,
@@ -133,9 +190,9 @@ export class BattleScene extends Phaser.Scene {
       ease: "Quad.easeOut",
       onComplete: () => {
         this.tweens.add({
-          targets: this.enemy,
-          x: this.enemyHome.x,
-          y: this.enemyHome.y,
+          targets: actor,
+          x: home.x,
+          y: home.y,
           scaleX: 1,
           scaleY: 1,
           alpha: 1,
@@ -291,31 +348,32 @@ export class BattleScene extends Phaser.Scene {
     });
   }
 
-  playCardImpact(label: string) {
+  playCardImpact(label: string, enemyId?: string) {
+    const { actor } = this.getEnemyActorTarget(enemyId);
     const card = this.add.rectangle(this.player.x + 42, this.player.y - 82, 48, 68, 0xf5cf72, 0.22);
     card.setStrokeStyle(2, 0xf5cf72, 0.92);
     card.setDepth(8);
     card.setAngle(-8);
-    this.showFloatingText("enemy", label, "damage");
+    this.showFloatingText("enemy", label, "damage", enemyId);
 
     this.tweens.add({
       targets: card,
-      x: this.enemy.x - 18,
-      y: this.enemy.y - 62,
+      x: actor.x - 18,
+      y: actor.y - 62,
       angle: 12,
       scale: 0.5,
       duration: 360,
       ease: "Cubic.easeIn",
       onComplete: () => {
         card.destroy();
-        this.flashEnemy();
-        this.showImpactBurst(this.enemy.x - 26, this.enemy.y - 62, 0xf5cf72);
+        this.flashEnemy(enemyId);
+        this.showImpactBurst(actor.x - 26, actor.y - 62, 0xf5cf72);
       },
     });
   }
 
-  showFloatingText(target: EffectTarget, text: string, tone: EffectTone = "neutral") {
-    const actor = target === "enemy" ? this.enemy : this.player;
+  showFloatingText(target: EffectTarget, text: string, tone: EffectTone = "neutral", enemyId?: string) {
+    const actor = target === "enemy" ? this.getEnemyActorTarget(enemyId).actor : this.player;
     const color = this.getToneColor(tone);
     const label = this.add.text(actor.x, actor.y - 132, text, {
       color,
@@ -385,19 +443,116 @@ export class BattleScene extends Phaser.Scene {
     return container;
   }
 
-  private createEnemyActor(x: number, y: number) {
-    if (!this.textures.exists(ENEMY_SPRITE_KEY)) {
+  private createEnemyActor(x: number, y: number, index = 0) {
+    const textureKey = getEnemySpriteKey(this.enemyStates[index]?.image ?? "griffith.png");
+
+    if (!this.textures.exists(textureKey)) {
       return this.createActor(x, y, 0x9d514c, "RIVAL");
     }
 
     const container = this.add.container(x, y);
-    const sprite = this.add.image(0, 0, ENEMY_SPRITE_KEY);
+    const sprite = this.add.image(0, 0, textureKey);
 
     sprite.setOrigin(0.5, 0.72);
     sprite.setFlipX(true);
     this.fitSpriteToBox(sprite, ACTOR_SPRITE_MAX_WIDTH, ACTOR_SPRITE_MAX_HEIGHT);
     container.add(sprite);
     return container;
+  }
+
+  private syncEnemyFormation() {
+    if (!this.scale || !this.sceneReady) {
+      return;
+    }
+
+    this.enemyHomes = this.getEnemyHomes(this.enemyCount);
+    this.activeEnemyIndex = clamp(this.activeEnemyIndex, 0, this.enemyHomes.length - 1);
+
+    while (this.enemies.length < this.enemyCount) {
+      const index = this.enemies.length;
+      const home = this.enemyHomes[index];
+      this.enemies.push(this.createEnemyActor(home.x, home.y, index));
+    }
+
+    while (this.enemies.length > this.enemyCount) {
+      this.enemies.pop()?.destroy();
+    }
+
+    this.enemies.forEach((enemy, index) => {
+      const home = this.enemyHomes[index];
+      this.tweens.killTweensOf(enemy);
+      enemy.setPosition(home.x, home.y);
+      enemy.setScale(1);
+      enemy.setAlpha(1);
+      enemy.setDepth(index === this.activeEnemyIndex ? 4 : 2);
+      this.syncEnemyHealthHud(this.enemyStates[index], index, index === this.activeEnemyIndex);
+    });
+
+    this.destroyStaleEnemyHealthHuds();
+
+    this.enemy = this.enemies[this.activeEnemyIndex] ?? this.enemies[0];
+    this.enemyHome = this.enemyHomes[this.activeEnemyIndex] ?? this.enemyHomes[0];
+    this.publishActorBounds();
+  }
+
+  private configureEnemyFormation(enemies: EnemySceneState[], activeEnemyId: string) {
+    this.enemyStates = enemies;
+    this.enemyCount = Math.max(1, enemies.length);
+    this.activeEnemyId = activeEnemyId || enemies[0]?.id || "";
+    this.activeEnemyIndex = Math.max(0, enemies.findIndex((enemy) => enemy.id === this.activeEnemyId));
+  }
+
+  private syncEnemyHealthHud(enemy: EnemySceneState | undefined, index: number, isActive: boolean) {
+    if (!enemy) {
+      return;
+    }
+
+    const existing = this.enemyHealthHuds.get(enemy.id);
+    if (existing) {
+      existing.destroy(true);
+      this.enemyHealthHuds.delete(enemy.id);
+    }
+  }
+
+  private destroyStaleEnemyHealthHuds() {
+    const livingIds = new Set(this.enemyStates.map((enemy) => enemy.id));
+
+    for (const [enemyId, hud] of this.enemyHealthHuds) {
+      if (!livingIds.has(enemyId)) {
+        hud.destroy(true);
+        this.enemyHealthHuds.delete(enemyId);
+      }
+    }
+  }
+
+  private getEnemyActorTarget(enemyId?: string) {
+    const targetEnemyId = enemyId ?? this.activeEnemyId;
+    const index = targetEnemyId ? this.enemyStates.findIndex((enemy) => enemy.id === targetEnemyId) : this.activeEnemyIndex;
+    const safeIndex = clamp(index < 0 ? this.activeEnemyIndex : index, 0, this.enemies.length - 1);
+
+    return {
+      actor: this.enemies[safeIndex] ?? this.enemy,
+      home: this.enemyHomes[safeIndex] ?? this.enemyHome,
+    };
+  }
+
+  private getEnemyHomes(count: number) {
+    const { width, height } = this.scale;
+    const baseY = height - ENEMY_BOTTOM_OFFSET;
+
+    if (count === 1) {
+      return [{ x: width * 0.75, y: baseY }];
+    }
+
+    const formationLeft = width * 0.48;
+    const formationRight = width * 0.9;
+    const slotWidth = (formationRight - formationLeft) / count;
+    return Array.from({ length: count }, (_, index) => {
+      return {
+        x: formationLeft + slotWidth * (index + 0.5),
+        y: baseY - (index % 2 === 1 ? 34 : 0),
+      };
+    });
   }
 
   private fitSpriteToBox(sprite: Phaser.GameObjects.Image, maxWidth: number, maxHeight: number) {
@@ -409,55 +564,58 @@ export class BattleScene extends Phaser.Scene {
   private runAttack(pattern: AttackPattern) {
     this.attackRunning = true;
     this.clearAttackTimers();
+    const attacker = this.getEnemyActorTarget();
+    this.enemy = attacker.actor;
+    this.enemyHome = attacker.home;
 
     this.attackCue?.destroy();
-    this.attackCue = this.add.text(this.enemy.x, this.enemy.y - 168, pattern.name, {
+    this.attackCue = this.add.text(attacker.actor.x, attacker.actor.y - 168, pattern.name, {
       color: this.getAttackColor(pattern),
       fontFamily: "Arial, sans-serif",
       fontSize: "22px",
       fontStyle: "bold",
     }).setOrigin(0.5).setDepth(6).setAlpha(0.95);
     if (pattern.id === "quick-slash") {
-      this.runQuickSlashVisual(pattern);
+      this.runQuickSlashVisual(pattern, attacker);
       return;
     }
 
     if (pattern.id === "heavy-overhead") {
-      this.runHeavyOverheadVisual(pattern);
+      this.runHeavyOverheadVisual(pattern, attacker);
       return;
     }
 
     if (pattern.id === "three-hit-combo") {
-      this.runThreeHitComboVisual(pattern);
+      this.runThreeHitComboVisual(pattern, attacker);
       return;
     }
 
     if (pattern.id === "shield-breaker") {
-      this.runShieldBreakerVisual(pattern);
+      this.runShieldBreakerVisual(pattern, attacker);
       return;
     }
 
-    this.runOrbitalLaserVisual(pattern);
+    this.runOrbitalLaserVisual(pattern, attacker);
   }
 
-  private runQuickSlashVisual(pattern: AttackPattern) {
-    this.resetEnemyPose();
+  private runQuickSlashVisual(pattern: AttackPattern, attacker: EnemyActorTarget) {
+    this.resetEnemyPose(attacker);
     this.tweenWeapon({ angle: -42, duration: pattern.hits[0].atMs, ease: "Sine.easeOut" });
 
     this.tweens.add({
-      targets: this.enemy,
-      x: this.enemyHome.x - 58,
+      targets: attacker.actor,
+      x: attacker.home.x - 58,
       scaleX: 1.08,
       duration: Math.max(120, pattern.hits[0].atMs - 80),
       ease: "Sine.easeInOut",
     });
 
-    this.queueHitVisual(pattern.hits[0].atMs, 64, 100);
+    this.queueHitVisual(attacker, pattern.hits[0].atMs, 64, 100);
   }
 
-  private runHeavyOverheadVisual(pattern: AttackPattern) {
-    this.resetEnemyPose();
-    this.enemy.setScale(1.06);
+  private runHeavyOverheadVisual(pattern: AttackPattern, attacker: EnemyActorTarget) {
+    this.resetEnemyPose(attacker);
+    attacker.actor.setScale(1.06);
     this.tweenWeapon({
       angle: -86,
       scaleY: 1.18,
@@ -466,45 +624,45 @@ export class BattleScene extends Phaser.Scene {
     });
 
     this.tweens.add({
-      targets: this.enemy,
-      y: this.enemyHome.y - 34,
+      targets: attacker.actor,
+      y: attacker.home.y - 34,
       scaleY: 1.13,
       duration: Math.max(160, pattern.hits[0].atMs - 120),
       ease: "Sine.easeInOut",
     });
 
-    this.queueHitVisual(pattern.hits[0].atMs, 86, 170);
+    this.queueHitVisual(attacker, pattern.hits[0].atMs, 86, 170);
   }
 
-  private runThreeHitComboVisual(pattern: AttackPattern) {
-    this.resetEnemyPose();
+  private runThreeHitComboVisual(pattern: AttackPattern, attacker: EnemyActorTarget) {
+    this.resetEnemyPose(attacker);
     const angles = [52, -56, 70];
     for (const [index, hit] of pattern.hits.entries()) {
       this.attackTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 220), () => {
         this.tweenWeapon({ angle: -angles[index], duration: 180, ease: "Sine.easeOut" });
         this.tweens.add({
-          targets: this.enemy,
-          x: this.enemyHome.x - (index % 2 === 0 ? 42 : 18),
-          y: this.enemyHome.y + (index === 1 ? -14 : 0),
+          targets: attacker.actor,
+          x: attacker.home.x - (index % 2 === 0 ? 42 : 18),
+          y: attacker.home.y + (index === 1 ? -14 : 0),
           duration: 140,
           ease: "Sine.easeOut",
         });
       }));
-      this.queueHitVisual(hit.atMs, angles[index], index === 2 ? 140 : 80);
+      this.queueHitVisual(attacker, hit.atMs, angles[index], index === 2 ? 140 : 80);
     }
   }
 
-  private runOrbitalLaserVisual(pattern: AttackPattern) {
-    this.resetEnemyPose();
+  private runOrbitalLaserVisual(pattern: AttackPattern, attacker: EnemyActorTarget) {
+    this.resetEnemyPose(attacker);
     this.tweenWeapon({ angle: -18, scaleY: 0.92, duration: 260, ease: "Sine.easeOut" });
 
     for (const [index, hit] of pattern.hits.entries()) {
       this.attackTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 280), () => {
         const turn = (index / pattern.hits.length) * Math.PI * 2 - Math.PI / 2;
-        this.pulseActor(this.enemy, 1.035, 120);
+        this.pulseActor(attacker.actor, 1.035, 120);
         this.showImpactBurst(
-          this.enemyHome.x + Math.cos(turn) * 172,
-          this.enemyHome.y - 78 + Math.sin(turn) * 172,
+          attacker.home.x + Math.cos(turn) * 172,
+          attacker.home.y - 78 + Math.sin(turn) * 172,
           0xf5cf72,
         );
       }));
@@ -516,11 +674,11 @@ export class BattleScene extends Phaser.Scene {
     }
   }
 
-  private runShieldBreakerVisual(pattern: AttackPattern) {
-    this.resetEnemyPose();
+  private runShieldBreakerVisual(pattern: AttackPattern, attacker: EnemyActorTarget) {
+    this.resetEnemyPose(attacker);
     const hit = pattern.hits[0];
 
-    this.enemy.setScale(1.04);
+    attacker.actor.setScale(1.04);
     this.tweenWeapon({
       angle: -104,
       scaleY: 1.28,
@@ -529,8 +687,8 @@ export class BattleScene extends Phaser.Scene {
     });
 
     this.tweens.add({
-      targets: this.enemy,
-      y: this.enemyHome.y - 22,
+      targets: attacker.actor,
+      y: attacker.home.y - 22,
       scaleX: 1.1,
       scaleY: 1.12,
       duration: Math.max(180, hit.atMs - 180),
@@ -538,16 +696,16 @@ export class BattleScene extends Phaser.Scene {
     });
 
     this.attackTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 360), () => {
-      this.showImpactBurst(this.enemyHome.x - 16, this.enemyHome.y - 112, 0x8fa0de);
-      this.pulseActor(this.enemy, 1.08, 160);
+      this.showImpactBurst(attacker.home.x - 16, attacker.home.y - 112, 0x8fa0de);
+      this.pulseActor(attacker.actor, 1.08, 160);
     }));
 
     this.attackTimers.push(this.time.delayedCall(hit.atMs, () => {
       this.tweenWeapon({ angle: 92, scaleY: 1, duration: 160, ease: "Quad.easeIn" });
       this.tweens.add({
-        targets: this.enemy,
-        x: this.enemyHome.x,
-        y: this.enemyHome.y,
+        targets: attacker.actor,
+        x: attacker.home.x,
+        y: attacker.home.y,
         scaleX: 1,
         scaleY: 1,
         duration: 170,
@@ -558,17 +716,17 @@ export class BattleScene extends Phaser.Scene {
     }));
   }
 
-  private queueHitVisual(atMs: number, angle: number, shakeMs: number) {
+  private queueHitVisual(attacker: EnemyActorTarget, atMs: number, angle: number, shakeMs: number) {
     this.attackTimers.push(this.time.delayedCall(Math.max(0, atMs - 140), () => {
-      this.pulseActor(this.enemy, 1.04, 95);
+      this.pulseActor(attacker.actor, 1.04, 95);
     }));
 
     this.attackTimers.push(this.time.delayedCall(atMs, () => {
       this.tweenWeapon({ angle, scaleY: 1, duration: 150, ease: "Quad.easeIn" });
       this.tweens.add({
-        targets: this.enemy,
-        x: this.enemyHome.x,
-        y: this.enemyHome.y,
+        targets: attacker.actor,
+        x: attacker.home.x,
+        y: attacker.home.y,
         scaleX: 1,
         scaleY: 1,
         duration: 150,
@@ -625,11 +783,11 @@ export class BattleScene extends Phaser.Scene {
     });
   }
 
-  private resetEnemyPose() {
-    this.tweens.killTweensOf(this.enemy);
-    this.enemy.setPosition(this.enemyHome.x, this.enemyHome.y);
-    this.enemy.setScale(1);
-    this.enemy.setAlpha(1);
+  private resetEnemyPose(target: EnemyActorTarget = this.getEnemyActorTarget()) {
+    this.tweens.killTweensOf(target.actor);
+    target.actor.setPosition(target.home.x, target.home.y);
+    target.actor.setScale(1);
+    target.actor.setAlpha(1);
     this.publishActorBounds();
   }
 
@@ -727,12 +885,21 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private handleResize() {
+    if (!this.sceneReady) {
+      return;
+    }
+
     const { width, height } = this.scale;
 
     this.playerHome = { x: width * 0.25, y: height - PLAYER_BOTTOM_OFFSET };
-    this.enemyHome = { x: width * 0.75, y: height - ENEMY_BOTTOM_OFFSET };
+    this.enemyHomes = this.getEnemyHomes(this.enemyCount);
+    this.enemyHome = this.enemyHomes[this.activeEnemyIndex] ?? this.enemyHomes[0];
     this.player.setPosition(this.playerHome.x, this.playerHome.y);
-    this.enemy.setPosition(this.enemyHome.x, this.enemyHome.y);
+    this.enemies.forEach((enemy, index) => {
+      const home = this.enemyHomes[index];
+      enemy.setPosition(home.x, home.y);
+      this.syncEnemyHealthHud(this.enemyStates[index], index, index === this.activeEnemyIndex);
+    });
     this.fitBackgroundToCanvas();
     this.fitAtmosphereToCanvas();
     this.publishActorBounds();
@@ -766,11 +933,32 @@ export class BattleScene extends Phaser.Scene {
     if (this.textures.exists(PLAYER_SPRITE_KEY)) {
       this.textures.get(PLAYER_SPRITE_KEY).setFilter(Phaser.Textures.FilterMode.LINEAR);
     }
-    this.textures.get(ENEMY_SPRITE_KEY).setFilter(Phaser.Textures.FilterMode.LINEAR);
+    for (const enemy of this.enemyStates) {
+      const textureKey = getEnemySpriteKey(enemy.image);
+      if (this.textures.exists(textureKey)) {
+        this.textures.get(textureKey).setFilter(Phaser.Textures.FilterMode.LINEAR);
+      }
+    }
   }
 
   private publishActorBounds() {
+    if (!this.sceneReady || !this.player || this.enemies.length === 0) {
+      return;
+    }
+
     const canvasBounds = this.game.canvas.getBoundingClientRect();
+    const enemyBoundsById: Record<string, DOMRect> = {};
+
+    this.enemies.forEach((enemy, index) => {
+      const enemyId = this.enemyStates[index]?.id ?? `enemy-${index + 1}`;
+      enemyBoundsById[enemyId] = new DOMRect(
+        canvasBounds.left + enemy.x - ACTOR_BOUNDS_WIDTH / 2,
+        canvasBounds.top + enemy.y - ACTOR_BOUNDS_HEIGHT / 2 - 10,
+        ACTOR_BOUNDS_WIDTH,
+        ACTOR_BOUNDS_HEIGHT,
+      );
+    });
+
     const enemyBounds = new DOMRect(
       canvasBounds.left + this.enemy.x - ACTOR_BOUNDS_WIDTH / 2,
       canvasBounds.top + this.enemy.y - ACTOR_BOUNDS_HEIGHT / 2 - 10,
@@ -784,6 +972,7 @@ export class BattleScene extends Phaser.Scene {
       ACTOR_BOUNDS_HEIGHT,
     );
     this.eventsBridge.onEnemyBoundsChange(enemyBounds);
+    this.eventsBridge.onEnemyBoundsListChange(enemyBoundsById);
     this.eventsBridge.onPlayerBoundsChange(playerBounds);
   }
 }

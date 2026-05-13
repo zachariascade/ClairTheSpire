@@ -1,13 +1,22 @@
 import { attackPatterns, getNextAttackId } from "./attackPatterns";
-import { cardDefinitions } from "./cards";
+import { cardDefinitions, getCardPlayBlockReason } from "./cards";
 import { applyCombatEffects } from "./effects";
-import { getActiveEnemy, updateActiveEnemy } from "./enemies";
+import { createEnemyCombatants, getActiveEnemy, getNextLivingEnemyId, updateEnemy } from "./enemies";
 import { clearUntilTurnEndStatuses, hasStatus, removeStatus } from "./statuses";
 import { characterDefinitions, createInitialMechanicState } from "../characters/definitions";
 import type { CharacterId } from "../characters/types";
 import { applyPerfectionDamageDealt } from "../characters/perfection";
 import { applyStanceDamageDealt, applyStanceDamageReceived } from "../characters/stances";
+import {
+  applyCardPlayedRelics,
+  applyEnemyAttackCompleteRelics,
+  applyReshuffleRelics,
+  createStartingRelics,
+  setRelicProgress,
+  triggerOpeningTempo,
+} from "../relics/engine";
 import type { CombatAction, CombatCard, CombatState, EnemyPhaseSummary, ReactionResult } from "./types";
+import type { EnemyDefinitionId } from "./enemies";
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
@@ -68,6 +77,9 @@ const drawCards = (
 
 const appendLog = (state: CombatState, entry: string): string[] => [entry, ...state.log].slice(0, 6);
 
+const getLivingEnemyIds = (state: CombatState): string[] =>
+  state.enemies.filter((enemy) => enemy.hp > 0).map((enemy) => enemy.id);
+
 const createEnemyPhaseSummary = (attackName: string): EnemyPhaseSummary => ({
   attackName,
   parries: 0,
@@ -88,13 +100,41 @@ const updateSummary = (
   currentEnemyPhaseSummary: update(state.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(getActiveEnemy(state).intent)),
 });
 
-export const createInitialCombatState = (characterId: CharacterId = "perfector"): CombatState => {
-  const character = characterDefinitions[characterId];
-  const deck = character.starterDeck.map(createCard);
-  const shuffledDeck = shuffleCards(deck, 17);
-  const openingDraw = drawCards(shuffledDeck.cards, [], 5, shuffledDeck.seed);
+export type CombatSetup = {
+  characterId?: CharacterId;
+  enemyIds?: EnemyDefinitionId[];
+};
+
+type NormalizedCombatSetup = {
+  characterId: CharacterId;
+  enemyIds?: EnemyDefinitionId[];
+};
+
+const normalizeCombatSetup = (setup: CharacterId | CombatSetup = "perfector"): NormalizedCombatSetup => {
+  if (typeof setup === "string") {
+    return {
+      characterId: setup,
+      enemyIds: undefined,
+    };
+  }
 
   return {
+    characterId: setup.characterId ?? "perfector",
+    enemyIds: setup.enemyIds,
+  };
+};
+
+export const createInitialCombatState = (setup: CharacterId | CombatSetup = "perfector"): CombatState => {
+  const { characterId, enemyIds } = normalizeCombatSetup(setup);
+  const character = characterDefinitions[characterId];
+  const deck = character.starterDeck.map(createCard);
+  const relics = createStartingRelics(characterId);
+  const openingHandSize = relics.some((relic) => relic.id === "duelists-tempo") ? character.handSize + 2 : character.handSize;
+  const shuffledDeck = shuffleCards(deck, 17);
+  const openingDraw = drawCards(shuffledDeck.cards, [], openingHandSize, shuffledDeck.seed);
+  const enemies = createEnemyCombatants(enemyIds);
+
+  const initialState: CombatState = {
     phase: "playerTurn",
     player: {
       characterId,
@@ -104,30 +144,28 @@ export const createInitialCombatState = (characterId: CharacterId = "perfector")
       energy: character.maxEnergy,
       maxEnergy: character.maxEnergy,
       handSize: character.handSize,
+      turnCardsPlayed: 0,
+      combatTurnNumber: 1,
       mechanic: createInitialMechanicState(character),
       statuses: {},
+      relics,
     },
-    enemies: [
-      {
-        id: "enemy-1",
-        hp: 48,
-        maxHp: 48,
-        attackId: "quick-slash",
-        intent: attackPatterns["quick-slash"].name,
-        statuses: {},
-      },
-    ],
-    activeEnemyId: "enemy-1",
+    enemies,
+    activeEnemyId: enemies[0].id,
     hand: openingDraw.hand,
     drawPile: openingDraw.drawPile,
     discard: [],
     nextCardInstanceId: deck.length,
     shuffleSeed: openingDraw.shuffleSeed,
     selectedCardId: null,
+    enemyTurnQueue: [],
     currentEnemyPhaseSummary: null,
     lastEnemyPhaseSummary: null,
+    lastTriggeredRelic: null,
     log: [`${character.name} enters the duel.`],
   };
+
+  return triggerOpeningTempo(initialState);
 };
 
 const gainPerfection = (state: CombatState, amount: number): CombatState => {
@@ -214,19 +252,22 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
 
     if (hasStatus(state.player.statuses, "riposte-prep")) {
       const nextHp = clamp(activeEnemy.hp - riposteDamage, 0, activeEnemy.maxHp);
+      const nextActiveEnemyId = nextHp <= 0 ? getNextLivingEnemyId(state, activeEnemy.id) : state.activeEnemyId;
       const currentSummary = nextState.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(activeEnemy.intent);
       const riposteSummary = {
         ...currentSummary,
         riposteDamage: currentSummary.riposteDamage + riposteDamage,
       };
-      nextState = updateActiveEnemy(
+      nextState = updateEnemy(
         {
           ...nextState,
-          phase: nextHp <= 0 ? "won" : nextState.phase,
+          phase: nextHp <= 0 && !nextActiveEnemyId ? "won" : nextState.phase,
+          activeEnemyId: nextActiveEnemyId ?? state.activeEnemyId,
           currentEnemyPhaseSummary: nextHp <= 0 ? null : riposteSummary,
           lastEnemyPhaseSummary: nextHp <= 0 ? riposteSummary : nextState.lastEnemyPhaseSummary,
           log: appendLog(nextState, `Counter Attack deals ${riposteDamage} damage.`),
         },
+        activeEnemy.id,
         (enemy) => ({
           ...enemy,
           hp: nextHp,
@@ -282,7 +323,10 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
 
 export const combatReducer = (state: CombatState, action: CombatAction): CombatState => {
   if (action.type === "RESET_COMBAT") {
-    return createInitialCombatState(action.characterId ?? state?.player.characterId ?? "perfector");
+    return createInitialCombatState({
+      characterId: action.characterId ?? state?.player.characterId ?? "perfector",
+      enemyIds: action.enemyIds,
+    });
   }
 
   if (state.phase === "won" || state.phase === "lost") {
@@ -296,11 +340,29 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
         selectedCardId: action.cardId,
       };
 
+    case "SELECT_ENEMY":
+      if (state.phase !== "playerTurn") {
+        return state;
+      }
+
+      if (!state.enemies.some((enemy) => enemy.id === action.enemyId && enemy.hp > 0)) {
+        return state;
+      }
+
+      return {
+        ...state,
+        activeEnemyId: action.enemyId,
+      };
+
     case "PLAY_CARD": {
       if (state.phase !== "playerTurn") {
         return state;
       }
 
+      const targetEnemyId =
+        action.targetEnemyId && state.enemies.some((enemy) => enemy.id === action.targetEnemyId && enemy.hp > 0)
+          ? action.targetEnemyId
+          : state.activeEnemyId;
       const card = state.hand.find((candidate) => candidate.instanceId === action.cardId);
       if (!card) {
         return state;
@@ -314,17 +376,28 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
         };
       }
 
+      const playBlockReason = getCardPlayBlockReason(definition, state.player.mechanic);
+      if (playBlockReason) {
+        return {
+          ...state,
+          log: appendLog(state, playBlockReason),
+        };
+      }
+
       let nextState: CombatState = {
         ...state,
+        activeEnemyId: targetEnemyId,
         selectedCardId: null,
         hand: state.hand.filter((candidate) => candidate.instanceId !== card.instanceId),
         discard: [card, ...state.discard],
         player: {
           ...state.player,
           energy: state.player.energy - definition.cost,
+          turnCardsPlayed: state.player.turnCardsPlayed + 1,
         },
       };
 
+      nextState = applyCardPlayedRelics(nextState);
       return applyCombatEffects(nextState, definition.effects);
     }
 
@@ -333,18 +406,24 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
         return state;
       }
 
+      const enemyTurnQueue = getLivingEnemyIds(state);
+      const firstEnemyId = enemyTurnQueue[0] ?? state.activeEnemyId;
+      const firstEnemy = state.enemies.find((enemy) => enemy.id === firstEnemyId) ?? getActiveEnemy(state);
+
       return {
         ...state,
         phase: "enemyTurn",
+        activeEnemyId: firstEnemy.id,
+        enemyTurnQueue,
         hand: [],
         discard: [...state.hand, ...state.discard],
         selectedCardId: null,
-        currentEnemyPhaseSummary: createEnemyPhaseSummary(getActiveEnemy(state).intent),
+        currentEnemyPhaseSummary: createEnemyPhaseSummary(firstEnemy.intent),
         player: {
           ...state.player,
           energy: 0,
         },
-        log: appendLog(state, `The enemy commits to ${getActiveEnemy(state).intent}.`),
+        log: appendLog(state, `${firstEnemy.name} commits to ${firstEnemy.intent}.`),
       };
 
     case "BEGIN_ENEMY_ATTACK":
@@ -352,9 +431,17 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
         return state;
       }
 
+      const attackingEnemyId = state.enemyTurnQueue[0] ?? state.activeEnemyId;
+      const attackingEnemy = state.enemies.find((enemy) => enemy.id === attackingEnemyId && enemy.hp > 0);
+      if (!attackingEnemy) {
+        return state;
+      }
+
       return {
         ...state,
         phase: "enemyAttack",
+        activeEnemyId: attackingEnemy.id,
+        currentEnemyPhaseSummary: state.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(attackingEnemy.intent),
       };
 
     case "REACTION_RESULT":
@@ -369,47 +456,93 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
         return state;
       }
 
-      const activeEnemy = getActiveEnemy(state);
-      const nextAttackId = getNextAttackId(activeEnemy.attackId);
-      const nextDraw = drawCards(state.drawPile, state.discard, state.player.handSize, state.shuffleSeed);
+      const attackSummary = state.currentEnemyPhaseSummary;
+      const completedEnemyId = state.enemyTurnQueue[0] ?? state.activeEnemyId;
+      const completedEnemy = state.enemies.find((enemy) => enemy.id === completedEnemyId) ?? getActiveEnemy(state);
+      const attackHitCount = attackPatterns[completedEnemy.attackId].hits.length;
+      let postAttackState = applyEnemyAttackCompleteRelics(state, attackSummary, attackHitCount);
+
+      if (postAttackState.phase === "won" || postAttackState.phase === "lost") {
+        return {
+          ...postAttackState,
+          currentEnemyPhaseSummary: null,
+          lastEnemyPhaseSummary: attackSummary,
+        };
+      }
+
+      const nextAttackId = getNextAttackId(completedEnemy.attackId);
+      const enemiesAfterCompletedAttack = postAttackState.enemies.map((enemy) =>
+        enemy.id === completedEnemyId
+          ? {
+              ...enemy,
+              attackId: nextAttackId,
+              intent: attackPatterns[nextAttackId].name,
+              statuses: removeStatus(enemy.statuses, "vulnerable", 1),
+            }
+          : enemy,
+      );
+      const remainingEnemyTurnQueue = state.enemyTurnQueue
+        .slice(1)
+        .filter((enemyId) => enemiesAfterCompletedAttack.some((enemy) => enemy.id === enemyId && enemy.hp > 0));
+      const nextActingEnemyId = remainingEnemyTurnQueue[0];
+
+      if (nextActingEnemyId) {
+        const nextActingEnemy =
+          enemiesAfterCompletedAttack.find((enemy) => enemy.id === nextActingEnemyId) ?? completedEnemy;
+
+        return {
+          ...postAttackState,
+          phase: "enemyTurn",
+          activeEnemyId: nextActingEnemy.id,
+          enemies: enemiesAfterCompletedAttack,
+          enemyTurnQueue: remainingEnemyTurnQueue,
+          currentEnemyPhaseSummary: createEnemyPhaseSummary(nextActingEnemy.intent),
+          lastEnemyPhaseSummary: attackSummary,
+          log: appendLog(postAttackState, `${nextActingEnemy.name} commits to ${nextActingEnemy.intent}.`),
+        };
+      }
+
+      const nextDraw = drawCards(
+        postAttackState.drawPile,
+        postAttackState.discard,
+        postAttackState.player.handSize,
+        postAttackState.shuffleSeed,
+      );
       const drawLog = nextDraw.reshuffled
         ? `Your turn. Discard reshuffled; drew ${nextDraw.hand.length}.`
         : `Your turn. Drew ${nextDraw.hand.length}.`;
 
-      return {
-        ...state,
+      let nextState: CombatState = {
+        ...postAttackState,
         phase: "playerTurn",
-        enemies: state.enemies.map((enemy) =>
-          enemy.id === state.activeEnemyId
-            ? {
-                ...enemy,
-                attackId: nextAttackId,
-                intent: attackPatterns[nextAttackId].name,
-                statuses: removeStatus(enemy.statuses, "vulnerable", 1),
-              }
-            : enemy,
-        ),
+        enemies: enemiesAfterCompletedAttack,
         hand: nextDraw.hand,
         drawPile: nextDraw.drawPile,
         discard: nextDraw.discard,
         shuffleSeed: nextDraw.shuffleSeed,
+        enemyTurnQueue: [],
         currentEnemyPhaseSummary: null,
-        lastEnemyPhaseSummary: state.currentEnemyPhaseSummary,
+        lastEnemyPhaseSummary: attackSummary,
         player: {
-          ...state.player,
+          ...postAttackState.player,
           block: 0,
-          energy: state.player.maxEnergy,
+          energy: postAttackState.player.maxEnergy,
+          turnCardsPlayed: 0,
+          combatTurnNumber: postAttackState.player.combatTurnNumber + 1,
           mechanic:
-            state.player.mechanic.type === "stance"
+            postAttackState.player.mechanic.type === "stance"
               ? {
-                  ...state.player.mechanic,
+                  ...postAttackState.player.mechanic,
                   transitionsThisTurn: 0,
                 }
-              : state.player.mechanic,
-          statuses: clearUntilTurnEndStatuses(state.player.statuses),
+              : postAttackState.player.mechanic,
+          statuses: clearUntilTurnEndStatuses(postAttackState.player.statuses),
         },
-        log: appendLog(state, drawLog),
+        log: appendLog(postAttackState, drawLog),
       };
+
+      nextState = setRelicProgress(nextState, "steady-pulse", 0);
+      return nextDraw.reshuffled ? applyReshuffleRelics(nextState) : nextState;
     }
 
     case "SET_NEXT_ATTACK":

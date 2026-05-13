@@ -3,6 +3,10 @@ import type { StanceId } from "../characters/types";
 
 export type CardKind = "attack" | "skill" | "power";
 export type CardPool = "colorless" | "perfector" | "fencer";
+export type CardPlayCondition = {
+  type: "stance";
+  stance: StanceId;
+};
 export type CardPresentationDamage =
   | {
       type: "fixed";
@@ -59,6 +63,11 @@ export type CombatEffect =
       log?: string;
     }
   | {
+      type: "gainEnergy";
+      amount: number;
+      log?: string;
+    }
+  | {
       type: "applyStatus";
       target: "enemy" | "player";
       status: StatusId;
@@ -93,8 +102,24 @@ export type CardDefinition = {
   rulesText: string;
   pool: CardPool;
   target: "enemy" | "self" | "none";
+  playCondition?: CardPlayCondition;
   effects: CombatEffect[];
   presentation: CardPresentationStep[];
+};
+
+export const getCardPlayBlockReason = (
+  definition: CardDefinition,
+  mechanic: { type: string; stance?: StanceId },
+): string | null => {
+  if (!definition.playCondition) {
+    return null;
+  }
+
+  if (definition.playCondition.type === "stance" && mechanic.stance !== definition.playCondition.stance) {
+    return `Requires ${definition.playCondition.stance[0].toUpperCase()}${definition.playCondition.stance.slice(1)} Stance.`;
+  }
+
+  return null;
 };
 
 export const cardDefinitions: Record<string, CardDefinition> = {
@@ -301,5 +326,31 @@ export const cardDefinitions: Record<string, CardDefinition> = {
         delayMs: 0,
       },
     ],
+  },
+  "finale-thrust": {
+    id: "finale-thrust",
+    name: "Finale Thrust",
+    cost: 2,
+    kind: "attack",
+    rulesText: "Requires Virtuoso. Deal 14 damage.",
+    pool: "fencer",
+    target: "enemy",
+    playCondition: { type: "stance", stance: "virtuoso" },
+    effects: [{ type: "damage", target: "enemy", amount: 14, log: "Finale Thrust lands from perfect form." }],
+    presentation: [
+      { type: "attack", target: "enemy", damage: { type: "fixed", amount: 14 }, animation: "heavy", delayMs: 0 },
+    ],
+  },
+  "perfect-tempo": {
+    id: "perfect-tempo",
+    name: "Perfect Tempo",
+    cost: 0,
+    kind: "skill",
+    rulesText: "Requires Virtuoso. Gain 2 Energy.",
+    pool: "fencer",
+    target: "self",
+    playCondition: { type: "stance", stance: "virtuoso" },
+    effects: [{ type: "gainEnergy", amount: 2, log: "Perfect Tempo restores 2 Energy." }],
+    presentation: [{ type: "status", target: "player", label: "+2 Energy", tone: "good", delayMs: 0 }],
   },
 };

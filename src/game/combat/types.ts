@@ -1,6 +1,8 @@
 import type { AttackId } from "./attackPatterns";
+import type { EnemyDefinitionId } from "./enemies";
 import type { StatusCollection } from "./statuses";
 import type { CharacterId, CharacterMechanicState } from "../characters/types";
+import type { PlayerRelic, RelicTrigger } from "../relics/types";
 
 export type CombatPhase = "playerTurn" | "enemyTurn" | "enemyAttack" | "won" | "lost";
 
@@ -24,6 +26,9 @@ export type EnemyPhaseSummary = {
 
 export type EnemyCombatant = {
   id: string;
+  definitionId: EnemyDefinitionId;
+  name: string;
+  image: string;
   hp: number;
   maxHp: number;
   attackId: AttackId;
@@ -41,8 +46,11 @@ export type CombatState = {
     energy: number;
     maxEnergy: number;
     handSize: number;
+    turnCardsPlayed: number;
+    combatTurnNumber: number;
     mechanic: CharacterMechanicState;
     statuses: StatusCollection;
+    relics: PlayerRelic[];
   };
   enemies: EnemyCombatant[];
   activeEnemyId: string;
@@ -52,8 +60,10 @@ export type CombatState = {
   nextCardInstanceId: number;
   shuffleSeed: number;
   selectedCardId: string | null;
+  enemyTurnQueue: string[];
   currentEnemyPhaseSummary: EnemyPhaseSummary | null;
   lastEnemyPhaseSummary: EnemyPhaseSummary | null;
+  lastTriggeredRelic: RelicTrigger | null;
   log: string[];
 };
 
@@ -66,10 +76,11 @@ export type ReactionResult =
 
 export type CombatAction =
   | { type: "SELECT_CARD"; cardId: string | null }
-  | { type: "PLAY_CARD"; cardId: string }
+  | { type: "SELECT_ENEMY"; enemyId: string }
+  | { type: "PLAY_CARD"; cardId: string; targetEnemyId?: string }
   | { type: "END_TURN" }
   | { type: "BEGIN_ENEMY_ATTACK" }
   | { type: "REACTION_RESULT"; result: ReactionResult; damage?: number; hitLabel?: string }
   | { type: "ENEMY_ATTACK_COMPLETE" }
   | { type: "SET_NEXT_ATTACK"; attackId: AttackId }
-  | { type: "RESET_COMBAT"; characterId?: CharacterId };
+  | { type: "RESET_COMBAT"; characterId?: CharacterId; enemyIds?: EnemyDefinitionId[] };
