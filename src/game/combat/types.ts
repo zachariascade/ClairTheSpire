@@ -22,6 +22,15 @@ export type EnemyPhaseSummary = {
   riposteDamage: number;
 };
 
+export type EnemyCombatant = {
+  id: string;
+  hp: number;
+  maxHp: number;
+  attackId: AttackId;
+  intent: string;
+  statuses: StatusCollection;
+};
+
 export type CombatState = {
   phase: CombatPhase;
   player: {
@@ -35,13 +44,8 @@ export type CombatState = {
     maxPerfection: number;
     statuses: StatusCollection;
   };
-  enemy: {
-    hp: number;
-    maxHp: number;
-    attackId: AttackId;
-    intent: string;
-    statuses: StatusCollection;
-  };
+  enemies: EnemyCombatant[];
+  activeEnemyId: string;
   hand: CombatCard[];
   drawPile: CombatCard[];
   discard: CombatCard[];

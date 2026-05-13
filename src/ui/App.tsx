@@ -9,6 +9,7 @@ import {
   type AttackPattern,
 } from "../game/combat/attackPatterns";
 import { cardDefinitions } from "../game/combat/cards";
+import { getActiveEnemy } from "../game/combat/enemies";
 import { combatReducer, createInitialCombatState } from "../game/combat/reducer";
 import { hasStatus } from "../game/combat/statuses";
 import type { CombatCard, EnemyPhaseSummary, ReactionResult } from "../game/combat/types";
@@ -73,6 +74,7 @@ export function App() {
   const [cardRects, setCardRects] = useState<CardRects>({});
   const [targetPointer, setTargetPointer] = useState<PointerPoint | null>(null);
   const [isEnemyTargetHovered, setIsEnemyTargetHovered] = useState(false);
+  const [isPlayerTargetHovered, setIsPlayerTargetHovered] = useState(false);
   const [targetCornersExiting, setTargetCornersExiting] = useState(false);
   const [enemyFeedback, setEnemyFeedback] = useState<ActorFeedback | null>(null);
   const [playerFeedback, setPlayerFeedback] = useState<ActorFeedback | null>(null);
@@ -95,7 +97,13 @@ export function App() {
   const selectedDefinition = selectedCard ? cardDefinitions[selectedCard.definitionId] : null;
   const selectedCardRect = selectedCard ? cardRects[selectedCard.instanceId] ?? null : null;
   const isAimingEnemyCard = selectedDefinition?.target === "enemy";
-  const currentAttackPattern = attackPatterns[state.enemy.attackId];
+  const isAimingPlayerCard = selectedDefinition?.target === "self";
+  const isAimingTargetedCard = isAimingEnemyCard || isAimingPlayerCard;
+  const targetBounds = isAimingEnemyCard ? enemyRect : isAimingPlayerCard ? playerRect : null;
+  const isTargetHovered = isAimingEnemyCard ? isEnemyTargetHovered : isAimingPlayerCard ? isPlayerTargetHovered : false;
+  const targetLabel = isAimingEnemyCard ? "enemy" : "player";
+  const activeEnemy = getActiveEnemy(state);
+  const currentAttackPattern = attackPatterns[activeEnemy.attackId];
 
   const showActorFeedback = useCallback((target: "player" | "enemy", text: string, tone: ActorFeedback["tone"]) => {
     feedbackIdRef.current += 1;
@@ -127,13 +135,16 @@ export function App() {
         battlefieldRef.current?.playCardImpact(effect.text);
         showActorFeedback("enemy", effect.text, "damage");
       } else if (effect) {
-        battlefieldRef.current?.showFloatingText(effect.target, effect.text, effect.tone);
+        if (effect.tone !== "block") {
+          battlefieldRef.current?.showFloatingText(effect.target, effect.text, effect.tone);
+        }
         showActorFeedback(effect.target, effect.text, effect.tone === "block" ? "block" : "good");
       }
 
       window.setTimeout(() => {
         dispatch({ type: "PLAY_CARD", cardId: card.instanceId });
         setIsEnemyTargetHovered(false);
+        setIsPlayerTargetHovered(false);
         setTargetPointer(null);
         setAnimatingCardId(null);
       }, definition.target === "enemy" ? 260 : 80);
@@ -145,7 +156,7 @@ export function App() {
     (card: CombatCard) => {
       const definition = cardDefinitions[card.definitionId];
 
-      if (definition.target !== "enemy") {
+      if (definition.target === "none") {
         playCard(card);
         return;
       }
@@ -167,9 +178,10 @@ export function App() {
   }, [playCard, selectedCard]);
 
   useEffect(() => {
-    if (!isAimingEnemyCard || !selectedCardRect) {
+    if (!isAimingTargetedCard || !selectedCardRect) {
       setTargetPointer(null);
       setIsEnemyTargetHovered(false);
+      setIsPlayerTargetHovered(false);
       return;
     }
 
@@ -180,19 +192,31 @@ export function App() {
 
     const handlePointerMove = (event: PointerEvent) => {
       setTargetPointer({ x: event.clientX, y: event.clientY });
-      if (enemyRect) {
-        setIsEnemyTargetHovered(
+      if (isAimingEnemyCard && enemyRect) {
+        const hovered =
           event.clientX >= enemyRect.left &&
-            event.clientX <= enemyRect.right &&
-            event.clientY >= enemyRect.top &&
-            event.clientY <= enemyRect.bottom,
-        );
+          event.clientX <= enemyRect.right &&
+          event.clientY >= enemyRect.top &&
+          event.clientY <= enemyRect.bottom;
+        setIsEnemyTargetHovered(hovered);
+        setIsPlayerTargetHovered(false);
+        return;
+      }
+
+      if (isAimingPlayerCard && playerRect) {
+        const hovered =
+          event.clientX >= playerRect.left &&
+          event.clientX <= playerRect.right &&
+          event.clientY >= playerRect.top &&
+          event.clientY <= playerRect.bottom;
+        setIsPlayerTargetHovered(hovered);
+        setIsEnemyTargetHovered(false);
       }
     };
 
     window.addEventListener("pointermove", handlePointerMove);
     return () => window.removeEventListener("pointermove", handlePointerMove);
-  }, [enemyRect, isAimingEnemyCard, selectedCardRect]);
+  }, [enemyRect, isAimingEnemyCard, isAimingPlayerCard, isAimingTargetedCard, playerRect, selectedCardRect]);
 
   useEffect(() => {
     if (targetCornerExitTimerRef.current !== null) {
@@ -200,7 +224,7 @@ export function App() {
       targetCornerExitTimerRef.current = null;
     }
 
-    if (isEnemyTargetHovered) {
+    if (isTargetHovered) {
       hadTargetCornerHoverRef.current = true;
       setTargetCornersExiting(false);
       return;
@@ -214,7 +238,7 @@ export function App() {
         targetCornerExitTimerRef.current = null;
       }, 180);
     }
-  }, [isEnemyTargetHovered]);
+  }, [isTargetHovered]);
 
   useEffect(() => () => {
     if (targetCornerExitTimerRef.current !== null) {
@@ -244,7 +268,9 @@ export function App() {
     battlefieldRef.current?.showReactionLabel(displayLabel, tone);
     if (result === "HIT_TAKEN" || (result === "REACTION_FAILED" && !recoveryCatches)) {
       battlefieldRef.current?.flashPlayer();
-      battlefieldRef.current?.showFloatingText("player", hpDamage > 0 ? `-${hpDamage}` : "Blocked", hpDamage > 0 ? "bad" : "block");
+      if (hpDamage > 0) {
+        battlefieldRef.current?.showFloatingText("player", `-${hpDamage}`, "bad");
+      }
       showActorFeedback("player", hpDamage > 0 ? `-${hpDamage}` : "Blocked", hpDamage > 0 ? "damage" : "block");
     }
     if (result === "REACTION_FAILED" && recoveryCatches) {
@@ -417,7 +443,7 @@ export function App() {
         <PhaserBattlefield
           ref={battlefieldRef}
           phase={state.phase}
-          attackId={state.enemy.attackId}
+          attackId={activeEnemy.attackId}
           onEnemyBoundsChange={setEnemyRect}
           onPlayerBoundsChange={setPlayerRect}
         />
@@ -428,36 +454,49 @@ export function App() {
 
         <TargetingOverlay
           activeCardRect={selectedCardRect}
-          pointer={isAimingEnemyCard ? targetPointer : null}
+          pointer={isAimingTargetedCard ? targetPointer : null}
           isAnimating={Boolean(animatingCardId)}
-          isTargetingEnemy={isEnemyTargetHovered}
+          target={isAimingEnemyCard ? "enemy" : isAimingPlayerCard ? "player" : null}
+          isTargetHovered={isTargetHovered}
         />
 
-        {isAimingEnemyCard && enemyRect && (
+        {isAimingTargetedCard && targetBounds && (
           <button
-            className={`enemy-target-button ${isEnemyTargetHovered ? "is-armed" : ""}`}
+            className={`enemy-target-button ${isTargetHovered ? "is-armed" : ""}`}
             type="button"
             style={{
-              left: enemyRect.left,
-              top: enemyRect.top,
-              width: enemyRect.width,
-              height: enemyRect.height,
+              left: targetBounds.left,
+              top: targetBounds.top,
+              width: targetBounds.width,
+              height: targetBounds.height,
             }}
-            aria-label={`Play ${selectedDefinition.name} on enemy`}
-            onPointerEnter={() => setIsEnemyTargetHovered(true)}
-            onPointerLeave={() => setIsEnemyTargetHovered(false)}
+            aria-label={`Play ${selectedDefinition?.name ?? "card"} on ${targetLabel}`}
+            onPointerEnter={() => {
+              if (isAimingEnemyCard) {
+                setIsEnemyTargetHovered(true);
+                return;
+              }
+              setIsPlayerTargetHovered(true);
+            }}
+            onPointerLeave={() => {
+              if (isAimingEnemyCard) {
+                setIsEnemyTargetHovered(false);
+                return;
+              }
+              setIsPlayerTargetHovered(false);
+            }}
             onClick={playSelectedCard}
           />
         )}
 
-        {isAimingEnemyCard && enemyRect && (isEnemyTargetHovered || targetCornersExiting) && (
+        {isAimingTargetedCard && targetBounds && (isTargetHovered || targetCornersExiting) && (
           <div
             className={`enemy-target-corners ${targetCornersExiting ? "is-exiting" : ""}`}
             style={{
-              left: enemyRect.left,
-              top: enemyRect.top,
-              width: enemyRect.width,
-              height: enemyRect.height,
+              left: targetBounds.left,
+              top: targetBounds.top,
+              width: targetBounds.width,
+              height: targetBounds.height,
             }}
             aria-hidden="true"
           />
@@ -476,12 +515,12 @@ export function App() {
         <div className="top-hud">
           <Meter label="HP" value={state.player.hp} max={state.player.maxHp} tone="red" />
           <Meter label="Perfection" value={state.player.perfection} max={state.player.maxPerfection} tone="gold" />
-          <Meter label="Enemy" value={state.enemy.hp} max={state.enemy.maxHp} tone="violet" />
+          <Meter label="Enemy" value={activeEnemy.hp} max={activeEnemy.maxHp} tone="violet" />
         </div>
 
         <aside className="intent-panel">
           <span>Intent</span>
-          <strong>{state.enemy.intent}</strong>
+          <strong>{activeEnemy.intent}</strong>
           <p className="phase-readout">Phase: {state.phase}</p>
           <p>A to parry, S to dodge</p>
         </aside>
@@ -737,6 +776,13 @@ function ActorFeedbackOverlay({
           <div className="actor-feedback-spark" />
         </>
       )}
+      {feedback.tone === "block" && (
+        <div className="actor-feedback-shield">
+          <div className="actor-feedback-shield-core" />
+          <div className="actor-feedback-shield-rim" />
+          <div className="actor-feedback-shield-shine" />
+        </div>
+      )}
       <span>{feedback.text}</span>
     </div>
   );
@@ -953,9 +999,17 @@ function CombatCardView({
       }}
     >
       <span className="card-cost">{definition.cost}</span>
-      <strong>{definition.name}</strong>
+      <span className={`card-title ${definition.name.length > 10 ? "card-title-long" : ""}`} title={definition.name}>
+        {definition.name}
+      </span>
+      <span className={`card-art card-art-${definition.id}`} aria-hidden="true">
+        <span className="card-art-vignette" />
+        <span className="card-art-mark card-art-mark-primary" />
+        <span className="card-art-mark card-art-mark-secondary" />
+        <span className="card-art-spark" />
+      </span>
       <span className="card-kind">{definition.kind}</span>
-      <p>{definition.rulesText}</p>
+      <span className="card-rules">{definition.rulesText}</span>
     </button>
   );
 }

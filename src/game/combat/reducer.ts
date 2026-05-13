@@ -1,6 +1,7 @@
 import { attackPatterns, getNextAttackId } from "./attackPatterns";
 import { cardDefinitions, starterDeck } from "./cards";
 import { applyCombatEffects } from "./effects";
+import { getActiveEnemy, updateActiveEnemy } from "./enemies";
 import { clearUntilTurnEndStatuses, hasStatus, removeStatus } from "./statuses";
 import type { CombatAction, CombatCard, CombatState, EnemyPhaseSummary, ReactionResult } from "./types";
 
@@ -81,7 +82,7 @@ const updateSummary = (
   state: CombatState,
   update: (summary: EnemyPhaseSummary) => EnemyPhaseSummary,
 ): Pick<CombatState, "currentEnemyPhaseSummary"> => ({
-  currentEnemyPhaseSummary: update(state.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(state.enemy.intent)),
+  currentEnemyPhaseSummary: update(state.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(getActiveEnemy(state).intent)),
 });
 
 export const createInitialCombatState = (): CombatState => {
@@ -102,13 +103,17 @@ export const createInitialCombatState = (): CombatState => {
       maxPerfection: 10,
       statuses: {},
     },
-    enemy: {
-      hp: 48,
-      maxHp: 48,
-      attackId: "quick-slash",
-      intent: attackPatterns["quick-slash"].name,
-      statuses: {},
-    },
+    enemies: [
+      {
+        id: "enemy-1",
+        hp: 48,
+        maxHp: 48,
+        attackId: "quick-slash",
+        intent: attackPatterns["quick-slash"].name,
+        statuses: {},
+      },
+    ],
+    activeEnemyId: "enemy-1",
     hand: openingDraw.hand,
     drawPile: openingDraw.drawPile,
     discard: [],
@@ -126,6 +131,7 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
   const guardMitigation = hasStatus(state.player.statuses, "guard") ? 5 : 0;
   const labelPrefix = hitLabel ? `${hitLabel}: ` : "";
   const isParry = result === "PARRY_PERFECT" || result === "PARRY_NORMAL";
+  const activeEnemy = getActiveEnemy(state);
 
   if (result === "REACTION_FAILED" && hasStatus(state.player.statuses, "recovery-step")) {
     return {
@@ -161,27 +167,29 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
     };
 
     if (hasStatus(state.player.statuses, "riposte-prep")) {
-      const nextHp = clamp(state.enemy.hp - 5, 0, state.enemy.maxHp);
-      const currentSummary = nextState.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(state.enemy.intent);
+      const nextHp = clamp(activeEnemy.hp - 5, 0, activeEnemy.maxHp);
+      const currentSummary = nextState.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(activeEnemy.intent);
       const riposteSummary = {
         ...currentSummary,
         riposteDamage: currentSummary.riposteDamage + 5,
       };
-      nextState = {
-        ...nextState,
-        phase: nextHp <= 0 ? "won" : nextState.phase,
-        enemy: {
-          ...state.enemy,
+      nextState = updateActiveEnemy(
+        {
+          ...nextState,
+          phase: nextHp <= 0 ? "won" : nextState.phase,
+          player: {
+            ...nextState.player,
+            statuses: removeStatus(nextState.player.statuses, "riposte-prep"),
+          },
+          currentEnemyPhaseSummary: nextHp <= 0 ? null : riposteSummary,
+          lastEnemyPhaseSummary: nextHp <= 0 ? riposteSummary : nextState.lastEnemyPhaseSummary,
+          log: appendLog(nextState, "Riposte Prep counters for 5 damage."),
+        },
+        (enemy) => ({
+          ...enemy,
           hp: nextHp,
-        },
-        player: {
-          ...nextState.player,
-          statuses: removeStatus(nextState.player.statuses, "riposte-prep"),
-        },
-        currentEnemyPhaseSummary: nextHp <= 0 ? null : riposteSummary,
-        lastEnemyPhaseSummary: nextHp <= 0 ? riposteSummary : nextState.lastEnemyPhaseSummary,
-        log: appendLog(nextState, "Riposte Prep counters for 5 damage."),
-      };
+        }),
+      );
     }
 
     return nextState;
@@ -208,7 +216,7 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
   const blockDamage = Math.min(state.player.block, mitigatedDamage);
   const hpDamage = mitigatedDamage - blockDamage;
   const nextHp = clamp(state.player.hp - hpDamage, 0, state.player.maxHp);
-  const currentSummary = state.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(state.enemy.intent);
+  const currentSummary = state.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(activeEnemy.intent);
   const nextSummary = {
     ...currentSummary,
     hitsTaken: currentSummary.hitsTaken + (result === "HIT_TAKEN" ? 1 : 0),
@@ -295,12 +303,12 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
         hand: [],
         discard: [...state.hand, ...state.discard],
         selectedCardId: null,
-        currentEnemyPhaseSummary: createEnemyPhaseSummary(state.enemy.intent),
+        currentEnemyPhaseSummary: createEnemyPhaseSummary(getActiveEnemy(state).intent),
         player: {
           ...state.player,
           energy: 0,
         },
-        log: appendLog(state, `The enemy commits to ${state.enemy.intent}.`),
+        log: appendLog(state, `The enemy commits to ${getActiveEnemy(state).intent}.`),
       };
 
     case "BEGIN_ENEMY_ATTACK":
@@ -325,7 +333,8 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
         return state;
       }
 
-      const nextAttackId = getNextAttackId(state.enemy.attackId);
+      const activeEnemy = getActiveEnemy(state);
+      const nextAttackId = getNextAttackId(activeEnemy.attackId);
       const nextDraw = drawCards(state.drawPile, state.discard, state.player.handSize, state.shuffleSeed);
       const drawLog = nextDraw.reshuffled
         ? `Your turn. Discard reshuffled; drew ${nextDraw.hand.length}.`
@@ -334,11 +343,15 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
       return {
         ...state,
         phase: "playerTurn",
-        enemy: {
-          ...state.enemy,
-          attackId: nextAttackId,
-          intent: attackPatterns[nextAttackId].name,
-        },
+        enemies: state.enemies.map((enemy) =>
+          enemy.id === state.activeEnemyId
+            ? {
+                ...enemy,
+                attackId: nextAttackId,
+                intent: attackPatterns[nextAttackId].name,
+              }
+            : enemy,
+        ),
         hand: nextDraw.hand,
         drawPile: nextDraw.drawPile,
         discard: nextDraw.discard,
@@ -362,11 +375,15 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
 
       return {
         ...state,
-        enemy: {
-          ...state.enemy,
-          attackId: action.attackId,
-          intent: attackPatterns[action.attackId].name,
-        },
+        enemies: state.enemies.map((enemy) =>
+          enemy.id === state.activeEnemyId
+            ? {
+                ...enemy,
+                attackId: action.attackId,
+                intent: attackPatterns[action.attackId].name,
+              }
+            : enemy,
+        ),
         log: appendLog(state, `Debug: next attack set to ${attackPatterns[action.attackId].name}.`),
       };
 

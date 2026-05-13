@@ -34,7 +34,6 @@ export class BattleScene extends Phaser.Scene {
   private enemyHome = { x: 0, y: 0 };
   private playerHome = { x: 0, y: 0 };
   private attackCue?: Phaser.GameObjects.Text;
-  private attackTell?: Phaser.GameObjects.Rectangle;
   private attackTimers: Phaser.Time.TimerEvent[] = [];
   private eventsBridge!: BattleSceneEvents;
   private phase: CombatPhase = "playerTurn";
@@ -506,8 +505,6 @@ export class BattleScene extends Phaser.Scene {
     this.resetEnemyPose();
     this.attackCue?.destroy();
     this.attackCue = undefined;
-    this.attackTell?.destroy();
-    this.attackTell = undefined;
   }
 
   private clearAttackTimers() {
@@ -566,7 +563,6 @@ export class BattleScene extends Phaser.Scene {
       duration: 160,
       ease: "Back.easeOut",
     });
-    this.attackTell?.setStrokeStyle(3, tone === "good" ? 0x9fe2b1 : tone === "bad" ? 0xf07a6a : 0xf7dca2, 0.8);
     this.showImpactBurst(this.player.x + 20, this.player.y - 60, tone === "good" ? 0x9fe2b1 : tone === "bad" ? 0xf07a6a : 0xf7dca2);
     this.time.delayedCall(220, () => {
       if (this.attackCue) {
@@ -584,43 +580,6 @@ export class BattleScene extends Phaser.Scene {
       yoyo: true,
       duration,
       ease: "Sine.easeOut",
-    });
-  }
-
-  private showAttackBeat(angle: number) {
-    const slash = this.add.line(
-      0,
-      0,
-      this.enemy.x - 34,
-      this.enemy.y - 84,
-      this.player.x + 28,
-      this.player.y - 58,
-      0xf7dca2,
-      0.72,
-    );
-    slash.setOrigin(0, 0);
-    slash.setLineWidth(7, 2);
-    slash.setDepth(7);
-    slash.setAngle(angle > 0 ? -8 : 8);
-
-    const warningRing = this.add.circle(this.player.x + 18, this.player.y - 58, 18, 0xf7dca2, 0.08);
-    warningRing.setStrokeStyle(3, 0xf7dca2, 0.8);
-    warningRing.setDepth(8);
-
-    this.tweens.add({
-      targets: slash,
-      alpha: 0,
-      duration: 280,
-      ease: "Quad.easeOut",
-      onComplete: () => slash.destroy(),
-    });
-    this.tweens.add({
-      targets: warningRing,
-      scale: 1.9,
-      alpha: 0,
-      duration: 220,
-      ease: "Quad.easeOut",
-      onComplete: () => warningRing.destroy(),
     });
   }
 
@@ -668,22 +627,6 @@ export class BattleScene extends Phaser.Scene {
     }
 
     return "#f7dca2";
-  }
-
-  private createAttackTell(pattern: AttackPattern) {
-    this.attackTell?.destroy();
-    const color = pattern.id === "heavy-overhead" ? 0xf07a6a : pattern.id === "three-hit-combo" ? 0x8fa0de : 0xf5cf72;
-    this.attackTell = this.add.rectangle(this.enemy.x, this.enemy.y - 15, 150, 230, color, 0.08);
-    this.attackTell.setStrokeStyle(3, color, 0.56);
-    this.attackTell.setDepth(4);
-    this.tweens.add({
-      targets: this.attackTell,
-      alpha: 0.22,
-      yoyo: true,
-      repeat: -1,
-      duration: pattern.id === "heavy-overhead" ? 520 : 260,
-      ease: "Sine.easeInOut",
-    });
   }
 
   private getAttackColor(pattern: AttackPattern) {

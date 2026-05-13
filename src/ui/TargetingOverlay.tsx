@@ -2,10 +2,11 @@ type TargetingOverlayProps = {
   activeCardRect: DOMRect | null;
   pointer: { x: number; y: number } | null;
   isAnimating: boolean;
-  isTargetingEnemy: boolean;
+  target: "enemy" | "player" | null;
+  isTargetHovered: boolean;
 };
 
-export function TargetingOverlay({ activeCardRect, pointer, isAnimating, isTargetingEnemy }: TargetingOverlayProps) {
+export function TargetingOverlay({ activeCardRect, pointer, isAnimating, target, isTargetHovered }: TargetingOverlayProps) {
   if (!activeCardRect || !pointer) {
     return <svg className="targeting-overlay" aria-hidden="true" />;
   }
@@ -16,9 +17,11 @@ export function TargetingOverlay({ activeCardRect, pointer, isAnimating, isTarge
   const endY = pointer.y;
   const controlY = Math.min(startY, endY) - 130;
   const path = `M ${startX} ${startY} Q ${(startX + endX) / 2} ${controlY} ${endX} ${endY}`;
+  const targetClass = target ? `is-targeting-${target}` : "";
+  const hoverClass = isTargetHovered ? "is-target-hovered" : "";
 
   return (
-    <svg className={`targeting-overlay ${isTargetingEnemy ? "is-targeting-enemy" : ""}`} aria-hidden="true">
+    <svg className={`targeting-overlay ${targetClass} ${hoverClass}`} aria-hidden="true">
       <defs>
         <marker id="arrowhead" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto">
           <path d="M 0 0 L 12 6 L 0 12 z" />

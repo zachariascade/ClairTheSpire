@@ -97,7 +97,7 @@ export const cardDefinitions: Record<string, CardDefinition> = {
     name: "Crescendo",
     cost: 2,
     kind: "attack",
-    rulesText: "Spend Perfection to deal scaling damage.",
+    rulesText: "Deal 4 damage. +2 damage per Perfection. Spend all Perfection.",
     target: "enemy",
     effects: [{ type: "spendPerfectionDamage", target: "enemy", baseDamage: 4, damagePerPerfection: 2 }],
   },

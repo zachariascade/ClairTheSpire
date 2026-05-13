@@ -1,4 +1,5 @@
 import type { CombatEffect } from "./cards";
+import { getActiveEnemy, updateActiveEnemy } from "./enemies";
 import { addStatus } from "./statuses";
 import type { CombatState } from "./types";
 
@@ -8,16 +9,19 @@ const appendLog = (state: CombatState, entry: string): string[] => [entry, ...st
 
 export const dealDamage = (state: CombatState, target: "enemy" | "player", amount: number): CombatState => {
   if (target === "enemy") {
-    const nextHp = clamp(state.enemy.hp - amount, 0, state.enemy.maxHp);
+    const activeEnemy = getActiveEnemy(state);
+    const nextHp = clamp(activeEnemy.hp - amount, 0, activeEnemy.maxHp);
 
-    return {
-      ...state,
-      phase: nextHp <= 0 ? "won" : state.phase,
-      enemy: {
-        ...state.enemy,
-        hp: nextHp,
+    return updateActiveEnemy(
+      {
+        ...state,
+        phase: nextHp <= 0 ? "won" : state.phase,
       },
-    };
+      (enemy) => ({
+        ...enemy,
+        hp: nextHp,
+      }),
+    );
   }
 
   const nextHp = clamp(state.player.hp - amount, 0, state.player.maxHp);
@@ -46,13 +50,10 @@ export const applyStatusEffect = (
   effect: Extract<CombatEffect, { type: "applyStatus" }>,
 ): CombatState => {
   if (target === "enemy") {
-    return {
-      ...state,
-      enemy: {
-        ...state.enemy,
-        statuses: addStatus(state.enemy.statuses, effect.status, effect.stacks, effect.duration),
-      },
-    };
+    return updateActiveEnemy(state, (enemy) => ({
+      ...enemy,
+      statuses: addStatus(enemy.statuses, effect.status, effect.stacks, effect.duration),
+    }));
   }
 
   return {
