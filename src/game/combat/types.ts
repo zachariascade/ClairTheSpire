@@ -1,5 +1,6 @@
 import type { AttackId } from "./attackPatterns";
 import type { StatusCollection } from "./statuses";
+import type { CharacterId, CharacterMechanicState } from "../characters/types";
 
 export type CombatPhase = "playerTurn" | "enemyTurn" | "enemyAttack" | "won" | "lost";
 
@@ -34,14 +35,14 @@ export type EnemyCombatant = {
 export type CombatState = {
   phase: CombatPhase;
   player: {
+    characterId: CharacterId;
     hp: number;
     maxHp: number;
     block: number;
     energy: number;
     maxEnergy: number;
     handSize: number;
-    perfection: number;
-    maxPerfection: number;
+    mechanic: CharacterMechanicState;
     statuses: StatusCollection;
   };
   enemies: EnemyCombatant[];
@@ -72,4 +73,4 @@ export type CombatAction =
   | { type: "REACTION_RESULT"; result: ReactionResult; damage?: number; hitLabel?: string }
   | { type: "ENEMY_ATTACK_COMPLETE" }
   | { type: "SET_NEXT_ATTACK"; attackId: AttackId }
-  | { type: "RESET_COMBAT" };
+  | { type: "RESET_COMBAT"; characterId?: CharacterId };

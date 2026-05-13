@@ -2,6 +2,7 @@ import type { CombatEffect } from "./cards";
 import { getActiveEnemy, updateActiveEnemy } from "./enemies";
 import { addStatus } from "./statuses";
 import type { CombatState } from "./types";
+import type { StanceId } from "../characters/types";
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
@@ -44,6 +45,29 @@ export const gainBlock = (state: CombatState, amount: number): CombatState => ({
   },
 });
 
+const isInStance = (state: CombatState, stance: StanceId): boolean =>
+  state.player.mechanic.type === "stance" && state.player.mechanic.stance === stance;
+
+export const changeStance = (state: CombatState, stance: StanceId): CombatState => {
+  if (state.player.mechanic.type !== "stance") {
+    return state;
+  }
+
+  const changed = state.player.mechanic.stance !== stance;
+
+  return {
+    ...state,
+    player: {
+      ...state.player,
+      mechanic: {
+        ...state.player.mechanic,
+        stance,
+        transitionsThisTurn: state.player.mechanic.transitionsThisTurn + (changed ? 1 : 0),
+      },
+    },
+  };
+};
+
 export const applyStatusEffect = (
   state: CombatState,
   target: "enemy" | "player",
@@ -81,19 +105,51 @@ const applyEffect = (state: CombatState, effect: CombatEffect): CombatState => {
   }
 
   if (effect.type === "spendPerfectionDamage") {
-    const damage = effect.baseDamage + nextState.player.perfection * effect.damagePerPerfection;
+    const perfection = nextState.player.mechanic.type === "perfection" ? nextState.player.mechanic.perfection : 0;
+    const damage = effect.baseDamage + perfection * effect.damagePerPerfection;
     nextState = dealDamage(nextState, effect.target, damage);
     nextState = {
       ...nextState,
       player: {
         ...nextState.player,
-        perfection: 0,
+        mechanic:
+          nextState.player.mechanic.type === "perfection"
+            ? {
+                ...nextState.player.mechanic,
+                perfection: 0,
+              }
+            : nextState.player.mechanic,
       },
       log: appendLog(nextState, `Crescendo spends Perfection for ${damage} damage.`),
     };
   }
 
-  if (effect.type !== "spendPerfectionDamage" && effect.log) {
+  if (effect.type === "changeStance") {
+    nextState = changeStance(nextState, effect.stance);
+  }
+
+  if (effect.type === "damageInStance") {
+    const damage = isInStance(nextState, effect.stance) ? effect.bonusAmount : effect.amount;
+    nextState = dealDamage(nextState, effect.target, damage);
+  }
+
+  if (effect.type === "gainBlockInStance") {
+    const block = isInStance(nextState, effect.stance) ? effect.bonusAmount : effect.amount;
+    nextState = gainBlock(nextState, block);
+  }
+
+  if (effect.type === "damagePerStanceTransition") {
+    const transitions =
+      nextState.player.mechanic.type === "stance" ? nextState.player.mechanic.transitionsThisTurn : 0;
+    const damage = effect.baseDamage + transitions * effect.damagePerTransition;
+    nextState = dealDamage(nextState, effect.target, damage);
+    nextState = {
+      ...nextState,
+      log: appendLog(nextState, `Flow State deals ${damage} damage.`),
+    };
+  }
+
+  if (effect.type !== "spendPerfectionDamage" && effect.type !== "damagePerStanceTransition" && effect.log) {
     nextState = {
       ...nextState,
       log: appendLog(nextState, effect.log),

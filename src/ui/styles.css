@@ -29,6 +29,99 @@ button {
     linear-gradient(135deg, #101011 0%, #1a1714 52%, #101316 100%);
 }
 
+.character-select {
+  display: grid;
+  align-content: center;
+  gap: 18px;
+  min-height: 100vh;
+  padding: 28px;
+}
+
+.character-select-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  width: min(980px, 100%);
+  margin: 0 auto;
+}
+
+.character-select-header span {
+  color: #f6ecd8;
+  font-size: clamp(28px, 5vw, 54px);
+  font-weight: 900;
+  letter-spacing: 0;
+}
+
+.character-select-header button,
+.character-option {
+  border: 1px solid rgba(246, 236, 216, 0.18);
+  border-radius: 8px;
+}
+
+.character-select-header button {
+  min-width: 118px;
+  min-height: 44px;
+  background: #f5cf72;
+  color: #1b1712;
+  font-weight: 900;
+}
+
+.character-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  width: min(980px, 100%);
+  margin: 0 auto;
+}
+
+.character-option {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 16px;
+  min-height: 210px;
+  padding: 14px;
+  background: rgba(15, 15, 16, 0.72);
+  color: #f6ecd8;
+  text-align: left;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+
+.character-option.is-selected {
+  border-color: #f5cf72;
+  box-shadow: 0 0 0 2px rgba(245, 207, 114, 0.28);
+}
+
+.character-portrait {
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgba(246, 236, 216, 0.08);
+}
+
+.character-portrait img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: top;
+}
+
+.character-option-copy {
+  display: grid;
+  align-content: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.character-option-copy strong {
+  font-size: 24px;
+}
+
+.character-option-copy span {
+  color: rgba(246, 236, 216, 0.78);
+  line-height: 1.35;
+}
+
 .combat-root {
   position: relative;
   min-height: 100vh;
@@ -882,6 +975,44 @@ button {
   background: #8fa0de;
 }
 
+.stance-meter {
+  border: 1px solid rgba(246, 236, 216, 0.16);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(15, 15, 16, 0.7);
+  backdrop-filter: blur(8px);
+}
+
+.stance-meter-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.stance-meter-row span {
+  overflow: hidden;
+  border-radius: 6px;
+  padding: 6px 4px;
+  background: rgba(246, 236, 216, 0.1);
+  color: rgba(246, 236, 216, 0.72);
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stance-meter-row .is-active {
+  background: #9ed3c8;
+  color: #10201f;
+}
+
+.stance-transition-count {
+  margin-top: 7px;
+  color: rgba(246, 236, 216, 0.68);
+  font-size: 11px;
+}
+
 .intent-panel,
 .log-panel,
 .summary-panel,
@@ -1566,6 +1697,25 @@ button {
 @media (max-width: 860px) {
   .app-shell {
     padding: 0;
+  }
+
+  .character-select {
+    align-content: start;
+    padding: 18px;
+  }
+
+  .character-select-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .character-options {
+    grid-template-columns: 1fr;
+  }
+
+  .character-option {
+    grid-template-columns: 96px minmax(0, 1fr);
+    min-height: 168px;
   }
 
   .combat-root {

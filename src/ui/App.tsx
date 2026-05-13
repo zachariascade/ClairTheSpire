@@ -10,9 +10,11 @@ import {
 } from "../game/combat/attackPatterns";
 import { cardDefinitions } from "../game/combat/cards";
 import { getActiveEnemy } from "../game/combat/enemies";
-import { combatReducer, createInitialCombatState } from "../game/combat/reducer";
+import { combatReducer, createInitialCombatState, getReactionTimingModifiers } from "../game/combat/reducer";
 import { hasStatus } from "../game/combat/statuses";
 import type { CombatCard, EnemyPhaseSummary, ReactionResult } from "../game/combat/types";
+import { characterDefinitions, characterOrder } from "../game/characters/definitions";
+import type { CharacterId, CharacterMechanicState, StanceId } from "../game/characters/types";
 import { PhaserBattlefield, type PhaserBattlefieldHandle } from "./PhaserBattlefield";
 import { TargetingOverlay } from "./TargetingOverlay";
 
@@ -38,8 +40,12 @@ const PLAYER_TURN_AFTER_ENEMY_PAUSE_MS = 750;
 
 const getCardBattlefieldEffect = (
   definitionId: string,
-  perfection: number,
+  mechanic: CharacterMechanicState,
 ): { target: "player" | "enemy"; text: string; tone: BattlefieldTextTone; impact?: boolean } | null => {
+  const perfection = mechanic.type === "perfection" ? mechanic.perfection : 0;
+  const stance = mechanic.type === "stance" ? mechanic.stance : "neutral";
+  const transitions = mechanic.type === "stance" ? mechanic.transitionsThisTurn : 0;
+
   if (definitionId === "strike") {
     return { target: "enemy", text: "-6", tone: "damage", impact: true };
   }
@@ -64,11 +70,37 @@ const getCardBattlefieldEffect = (
     return { target: "player", text: "Recovery Ready", tone: "good" };
   }
 
+  if (definitionId === "lunge") {
+    return { target: "enemy", text: `-${stance === "virtuoso" ? 8 : 5}`, tone: "damage", impact: true };
+  }
+
+  if (definitionId === "elegant-flourish") {
+    return { target: "enemy", text: "-5", tone: "damage", impact: true };
+  }
+
+  if (definitionId === "brace") {
+    return { target: "player", text: "Defensive", tone: "block" };
+  }
+
+  if (definitionId === "measure") {
+    return { target: "player", text: `+${stance === "defensive" ? 8 : 4} Block`, tone: "block" };
+  }
+
+  if (definitionId === "riposte-line") {
+    return { target: "player", text: "Counter", tone: "good" };
+  }
+
+  if (definitionId === "flow-state") {
+    return { target: "enemy", text: `-${6 + transitions * 3}`, tone: "damage", impact: true };
+  }
+
   return null;
 };
 
 export function App() {
   const [state, dispatch] = useReducer(combatReducer, undefined, createInitialCombatState);
+  const [selectedCharacterId, setSelectedCharacterId] = useState<CharacterId>("perfection");
+  const [screen, setScreen] = useState<"characterSelect" | "combat">("characterSelect");
   const [enemyRect, setEnemyRect] = useState<DOMRect | null>(null);
   const [playerRect, setPlayerRect] = useState<DOMRect | null>(null);
   const [cardRects, setCardRects] = useState<CardRects>({});
@@ -105,6 +137,12 @@ export function App() {
   const activeEnemy = getActiveEnemy(state);
   const currentAttackPattern = attackPatterns[activeEnemy.attackId];
 
+  const startCombat = useCallback((characterId: CharacterId) => {
+    setSelectedCharacterId(characterId);
+    dispatch({ type: "RESET_COMBAT", characterId });
+    setScreen("combat");
+  }, []);
+
   const showActorFeedback = useCallback((target: "player" | "enemy", text: string, tone: ActorFeedback["tone"]) => {
     feedbackIdRef.current += 1;
     const feedback = { id: feedbackIdRef.current, text, tone };
@@ -129,7 +167,7 @@ export function App() {
   const playCard = useCallback(
     (card: CombatCard) => {
       const definition = cardDefinitions[card.definitionId];
-      const effect = getCardBattlefieldEffect(definition.id, state.player.perfection);
+      const effect = getCardBattlefieldEffect(definition.id, state.player.mechanic);
       setAnimatingCardId(card.instanceId);
       if (effect?.impact) {
         battlefieldRef.current?.playCardImpact(effect.text);
@@ -149,7 +187,7 @@ export function App() {
         setAnimatingCardId(null);
       }, definition.target === "enemy" ? 260 : 80);
     },
-    [showActorFeedback, state.player.perfection],
+    [showActorFeedback, state.player.mechanic],
   );
 
   const handleCardClick = useCallback(
@@ -262,8 +300,12 @@ export function App() {
     const tone = result === "HIT_TAKEN" || (result === "REACTION_FAILED" && !recoveryCatches) ? "bad" : "good";
     const displayLabel = recoveryCatches ? "Recovery" : riposteCounters ? "Riposte" : label;
     const baseDamage = result === "REACTION_FAILED" ? Math.max(1, hit.damage - 2) : hit.damage;
-    const mitigatedDamage = Math.max(0, baseDamage - (hasStatus(state.player.statuses, "guard") ? 5 : 0));
+    const stanceMitigation =
+      state.player.mechanic.type === "stance" && state.player.mechanic.stance === "defensive" ? 1 : 0;
+    const mitigatedDamage = Math.max(0, baseDamage - (hasStatus(state.player.statuses, "guard") ? 5 : 0) - stanceMitigation);
     const hpDamage = Math.max(0, mitigatedDamage - state.player.block);
+    const riposteDamage =
+      state.player.mechanic.type === "stance" && state.player.mechanic.stance === "counter" ? 8 : 5;
 
     battlefieldRef.current?.showReactionLabel(displayLabel, tone);
     if (result === "HIT_TAKEN" || (result === "REACTION_FAILED" && !recoveryCatches)) {
@@ -289,8 +331,8 @@ export function App() {
     }
     if (riposteCounters) {
       battlefieldRef.current?.flashEnemy();
-      battlefieldRef.current?.showFloatingText("enemy", "-5", "damage");
-      showActorFeedback("enemy", "-5", "damage");
+      battlefieldRef.current?.showFloatingText("enemy", `-${riposteDamage}`, "damage");
+      showActorFeedback("enemy", `-${riposteDamage}`, "damage");
     }
     dispatch({ type: "REACTION_RESULT", result, damage: hit.damage, hitLabel: hit.label });
 
@@ -300,6 +342,7 @@ export function App() {
   }, [
     completeEnemyAttackSoon,
     currentAttackPattern.hits.length,
+    state.player.mechanic,
     state.player.statuses,
   ]);
 
@@ -310,7 +353,7 @@ export function App() {
       }
 
       const elapsed = performance.now() - attackStartedAt;
-      const focusWindowBonus = hasStatus(state.player.statuses, "focus") ? 140 : 0;
+      const timingModifiers = getReactionTimingModifiers(state);
       const nextHit = currentAttackPattern.hits
         .map((hit, index) => ({ hit, index, offset: Math.abs(elapsed - hit.atMs) }))
         .filter(({ index }) => !resolvedHitIdsRef.current.has(index))
@@ -330,19 +373,21 @@ export function App() {
 
       if (input === "dodge") {
         const result =
-          nextHit.offset <= currentAttackPattern.dodgeWindowMs + focusWindowBonus ? "DODGE_SUCCESS" : "REACTION_FAILED";
+          nextHit.offset <= currentAttackPattern.dodgeWindowMs + timingModifiers.dodgeWindowBonusMs
+            ? "DODGE_SUCCESS"
+            : "REACTION_FAILED";
         showTimingInputMarker(markerPercent, result === "DODGE_SUCCESS" ? "dodge" : "miss");
         handleReactionResult(nextHit.index, nextHit.hit, result, result === "DODGE_SUCCESS" ? "Dodge" : "Early");
         return;
       }
 
-      if (nextHit.offset <= currentAttackPattern.perfectParryWindowMs + focusWindowBonus / 2) {
+      if (nextHit.offset <= currentAttackPattern.perfectParryWindowMs + timingModifiers.parryWindowBonusMs / 2) {
         showTimingInputMarker(markerPercent, "perfect");
         handleReactionResult(nextHit.index, nextHit.hit, "PARRY_PERFECT", "Perfect");
         return;
       }
 
-      if (nextHit.offset <= currentAttackPattern.normalParryWindowMs + focusWindowBonus) {
+      if (nextHit.offset <= currentAttackPattern.normalParryWindowMs + timingModifiers.parryWindowBonusMs) {
         showTimingInputMarker(markerPercent, "parry");
         handleReactionResult(nextHit.index, nextHit.hit, "PARRY_NORMAL", "Parry");
         return;
@@ -351,7 +396,7 @@ export function App() {
       showTimingInputMarker(markerPercent, "miss");
       handleReactionResult(nextHit.index, nextHit.hit, "REACTION_FAILED", elapsed < nextHit.hit.atMs ? "Early" : "Late");
     },
-    [attackStartedAt, currentAttackPattern, handleReactionResult, showTimingInputMarker, state.player.statuses],
+    [attackStartedAt, currentAttackPattern, handleReactionResult, showTimingInputMarker, state],
   );
 
   useEffect(() => {
@@ -437,6 +482,18 @@ export function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  if (screen === "characterSelect") {
+    return (
+      <main className="app-shell">
+        <CharacterSelectScreen
+          selectedCharacterId={selectedCharacterId}
+          onSelect={setSelectedCharacterId}
+          onStart={() => startCombat(selectedCharacterId)}
+        />
+      </main>
+    );
+  }
+
   return (
     <main className="app-shell">
       <section className="combat-root" aria-label="Combat prototype">
@@ -514,11 +571,12 @@ export function App() {
 
         <div className="top-hud">
           <Meter label="HP" value={state.player.hp} max={state.player.maxHp} tone="red" />
-          <Meter label="Perfection" value={state.player.perfection} max={state.player.maxPerfection} tone="gold" />
+          <CharacterMechanicHud mechanic={state.player.mechanic} />
           <Meter label="Enemy" value={activeEnemy.hp} max={activeEnemy.maxHp} tone="violet" />
         </div>
 
         <aside className="intent-panel">
+          <span>{characterDefinitions[state.player.characterId].name}</span>
           <span>Intent</span>
           <strong>{activeEnemy.intent}</strong>
           <p className="phase-readout">Phase: {state.phase}</p>
@@ -536,7 +594,7 @@ export function App() {
             lastEnemyPhaseSummary={state.lastEnemyPhaseSummary}
             showTimingAssist={showTimingAssist}
             onReset={() => {
-              dispatch({ type: "RESET_COMBAT" });
+              dispatch({ type: "RESET_COMBAT", characterId: state.player.characterId });
             }}
             onSetAttack={(attackId) => dispatch({ type: "SET_NEXT_ATTACK", attackId })}
             onToggleCollapsed={() => setDebugCollapsed((value) => !value)}
@@ -585,13 +643,98 @@ export function App() {
         {(state.phase === "won" || state.phase === "lost") && (
           <div className="result-panel">
             <strong>{state.phase === "won" ? "Victory" : "Defeat"}</strong>
-            <button type="button" onClick={() => dispatch({ type: "RESET_COMBAT" })}>
+            <button type="button" onClick={() => dispatch({ type: "RESET_COMBAT", characterId: state.player.characterId })}>
               Reset
+            </button>
+            <button type="button" onClick={() => setScreen("characterSelect")}>
+              Change Character
             </button>
           </div>
         )}
       </section>
     </main>
+  );
+}
+
+const stanceLabels: Record<StanceId, string> = {
+  neutral: "Neutral",
+  virtuoso: "Virtuoso",
+  defensive: "Defensive",
+  counter: "Counter",
+};
+
+function CharacterSelectScreen({
+  selectedCharacterId,
+  onSelect,
+  onStart,
+}: {
+  selectedCharacterId: CharacterId;
+  onSelect: (characterId: CharacterId) => void;
+  onStart: () => void;
+}) {
+  return (
+    <section className="character-select" aria-label="Choose character">
+      <div className="character-select-header">
+        <span>Choose Character</span>
+        <button type="button" onClick={onStart}>
+          Start
+        </button>
+      </div>
+
+      <div className="character-options">
+        {characterOrder.map((characterId) => {
+          const character = characterDefinitions[characterId];
+          const selected = selectedCharacterId === characterId;
+          const mechanicLabel =
+            character.mechanics.type === "perfection"
+              ? `Perfection ${character.mechanics.maxPerfection}`
+              : `${stanceLabels[character.mechanics.startingStance]} Stance`;
+
+          return (
+            <button
+              className={`character-option ${selected ? "is-selected" : ""}`}
+              key={character.id}
+              type="button"
+              onClick={() => onSelect(character.id)}
+            >
+              <span className="character-portrait">
+                <img src={`${import.meta.env.BASE_URL}${character.image}`} alt="" />
+              </span>
+              <span className="character-option-copy">
+                <strong>{character.name}</strong>
+                <span>{character.description}</span>
+                <span>
+                  {character.maxHp} HP | {character.maxEnergy} Energy | {mechanicLabel}
+                </span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function CharacterMechanicHud({ mechanic }: { mechanic: CharacterMechanicState }) {
+  if (mechanic.type === "perfection") {
+    return <Meter label="Perfection" value={mechanic.perfection} max={mechanic.maxPerfection} tone="gold" />;
+  }
+
+  return (
+    <div className="stance-meter" aria-label="Stance">
+      <div className="meter-label">
+        <span>Stance</span>
+        <strong>{stanceLabels[mechanic.stance]}</strong>
+      </div>
+      <div className="stance-meter-row">
+        {(["neutral", "virtuoso", "defensive", "counter"] as StanceId[]).map((stance) => (
+          <span className={mechanic.stance === stance ? "is-active" : ""} key={stance}>
+            {stanceLabels[stance]}
+          </span>
+        ))}
+      </div>
+      <div className="stance-transition-count">{mechanic.transitionsThisTurn} transition this turn</div>
+    </div>
   );
 }
 
