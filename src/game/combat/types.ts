@@ -1,0 +1,74 @@
+import type { AttackId } from "./attackPatterns";
+
+export type CombatPhase = "playerTurn" | "enemyTurn" | "enemyAttack" | "won" | "lost";
+
+export type CombatCard = {
+  instanceId: string;
+  definitionId: string;
+};
+
+export type EnemyPhaseSummary = {
+  attackName: string;
+  parries: number;
+  perfectParries: number;
+  dodges: number;
+  hitsTaken: number;
+  failedReactions: number;
+  damageTaken: number;
+  guardPrevented: number;
+  blockPrevented: number;
+  recoverySaves: number;
+  riposteDamage: number;
+};
+
+export type CombatState = {
+  phase: CombatPhase;
+  player: {
+    hp: number;
+    maxHp: number;
+    block: number;
+    energy: number;
+    maxEnergy: number;
+    handSize: number;
+    perfection: number;
+    maxPerfection: number;
+  };
+  enemy: {
+    hp: number;
+    maxHp: number;
+    attackId: AttackId;
+    intent: string;
+  };
+  hand: CombatCard[];
+  drawPile: CombatCard[];
+  discard: CombatCard[];
+  nextCardInstanceId: number;
+  shuffleSeed: number;
+  selectedCardId: string | null;
+  activeReactionBuffs: {
+    focus: boolean;
+    guard: boolean;
+    ripostePrep: boolean;
+    recoveryStep: boolean;
+  };
+  currentEnemyPhaseSummary: EnemyPhaseSummary | null;
+  lastEnemyPhaseSummary: EnemyPhaseSummary | null;
+  log: string[];
+};
+
+export type ReactionResult =
+  | "PARRY_PERFECT"
+  | "PARRY_NORMAL"
+  | "DODGE_SUCCESS"
+  | "REACTION_FAILED"
+  | "HIT_TAKEN";
+
+export type CombatAction =
+  | { type: "SELECT_CARD"; cardId: string | null }
+  | { type: "PLAY_CARD"; cardId: string }
+  | { type: "END_TURN" }
+  | { type: "BEGIN_ENEMY_ATTACK" }
+  | { type: "REACTION_RESULT"; result: ReactionResult; damage?: number; hitLabel?: string }
+  | { type: "ENEMY_ATTACK_COMPLETE" }
+  | { type: "SET_NEXT_ATTACK"; attackId: AttackId }
+  | { type: "RESET_COMBAT" };
