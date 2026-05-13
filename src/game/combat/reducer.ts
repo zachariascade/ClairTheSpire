@@ -1,5 +1,6 @@
 import { attackPatterns, getNextAttackId } from "./attackPatterns";
 import { cardDefinitions, starterDeck } from "./cards";
+import { addStatus, clearUntilTurnEndStatuses, hasStatus, removeStatus } from "./statuses";
 import type { CombatAction, CombatCard, CombatState, EnemyPhaseSummary, ReactionResult } from "./types";
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
@@ -98,12 +99,14 @@ export const createInitialCombatState = (): CombatState => {
       handSize: 5,
       perfection: 0,
       maxPerfection: 10,
+      statuses: {},
     },
     enemy: {
       hp: 48,
       maxHp: 48,
       attackId: "quick-slash",
       intent: attackPatterns["quick-slash"].name,
+      statuses: {},
     },
     hand: openingDraw.hand,
     drawPile: openingDraw.drawPile,
@@ -111,12 +114,6 @@ export const createInitialCombatState = (): CombatState => {
     nextCardInstanceId: deck.length,
     shuffleSeed: openingDraw.shuffleSeed,
     selectedCardId: null,
-    activeReactionBuffs: {
-      focus: false,
-      guard: false,
-      ripostePrep: false,
-      recoveryStep: false,
-    },
     currentEnemyPhaseSummary: null,
     lastEnemyPhaseSummary: null,
     log: ["A duel begins."],
@@ -124,12 +121,12 @@ export const createInitialCombatState = (): CombatState => {
 };
 
 const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10, hitLabel?: string): CombatState => {
-  const focusBonus = state.activeReactionBuffs.focus ? 1 : 0;
-  const guardMitigation = state.activeReactionBuffs.guard ? 5 : 0;
+  const focusBonus = hasStatus(state.player.statuses, "focus") ? 1 : 0;
+  const guardMitigation = hasStatus(state.player.statuses, "guard") ? 5 : 0;
   const labelPrefix = hitLabel ? `${hitLabel}: ` : "";
   const isParry = result === "PARRY_PERFECT" || result === "PARRY_NORMAL";
 
-  if (result === "REACTION_FAILED" && state.activeReactionBuffs.recoveryStep) {
+  if (result === "REACTION_FAILED" && hasStatus(state.player.statuses, "recovery-step")) {
     return {
       ...state,
       ...updateSummary(state, (summary) => ({
@@ -137,9 +134,9 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
         failedReactions: summary.failedReactions + 1,
         recoverySaves: summary.recoverySaves + 1,
       })),
-      activeReactionBuffs: {
-        ...state.activeReactionBuffs,
-        recoveryStep: false,
+      player: {
+        ...state.player,
+        statuses: removeStatus(state.player.statuses, "recovery-step"),
       },
       log: appendLog(state, `${labelPrefix}Recovery Step catches the mistake.`),
     };
@@ -162,7 +159,7 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
       log: appendLog(state, `${labelPrefix}${parryLog}`),
     };
 
-    if (state.activeReactionBuffs.ripostePrep) {
+    if (hasStatus(state.player.statuses, "riposte-prep")) {
       const nextHp = clamp(state.enemy.hp - 5, 0, state.enemy.maxHp);
       const currentSummary = nextState.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(state.enemy.intent);
       const riposteSummary = {
@@ -176,9 +173,9 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
           ...state.enemy,
           hp: nextHp,
         },
-        activeReactionBuffs: {
-          ...nextState.activeReactionBuffs,
-          ripostePrep: false,
+        player: {
+          ...nextState.player,
+          statuses: removeStatus(nextState.player.statuses, "riposte-prep"),
         },
         currentEnemyPhaseSummary: nextHp <= 0 ? null : riposteSummary,
         lastEnemyPhaseSummary: nextHp <= 0 ? riposteSummary : nextState.lastEnemyPhaseSummary,
@@ -302,10 +299,7 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
           player: {
             ...nextState.player,
             block: nextState.player.block + 5,
-          },
-          activeReactionBuffs: {
-            ...nextState.activeReactionBuffs,
-            guard: true,
+            statuses: addStatus(nextState.player.statuses, "guard"),
           },
           log: appendLog(nextState, "Guard readies a safer defense."),
         };
@@ -314,9 +308,9 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
       if (definition.id === "focus") {
         nextState = {
           ...nextState,
-          activeReactionBuffs: {
-            ...nextState.activeReactionBuffs,
-            focus: true,
+          player: {
+            ...nextState.player,
+            statuses: addStatus(nextState.player.statuses, "focus"),
           },
           log: appendLog(nextState, "Focus widens the next parry window."),
         };
@@ -325,9 +319,9 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
       if (definition.id === "riposte-prep") {
         nextState = {
           ...nextState,
-          activeReactionBuffs: {
-            ...nextState.activeReactionBuffs,
-            ripostePrep: true,
+          player: {
+            ...nextState.player,
+            statuses: addStatus(nextState.player.statuses, "riposte-prep"),
           },
           log: appendLog(nextState, "Riposte Prep readies a counter."),
         };
@@ -336,9 +330,9 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
       if (definition.id === "recovery-step") {
         nextState = {
           ...nextState,
-          activeReactionBuffs: {
-            ...nextState.activeReactionBuffs,
-            recoveryStep: true,
+          player: {
+            ...nextState.player,
+            statuses: addStatus(nextState.player.statuses, "recovery-step"),
           },
           log: appendLog(nextState, "Recovery Step can catch one mistake."),
         };
@@ -430,12 +424,7 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
           ...state.player,
           block: 0,
           energy: state.player.maxEnergy,
-        },
-        activeReactionBuffs: {
-          focus: false,
-          guard: false,
-          ripostePrep: false,
-          recoveryStep: false,
+          statuses: clearUntilTurnEndStatuses(state.player.statuses),
         },
         log: appendLog(state, drawLog),
       };

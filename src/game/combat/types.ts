@@ -1,4 +1,5 @@
 import type { AttackId } from "./attackPatterns";
+import type { StatusCollection } from "./statuses";
 
 export type CombatPhase = "playerTurn" | "enemyTurn" | "enemyAttack" | "won" | "lost";
 
@@ -32,12 +33,14 @@ export type CombatState = {
     handSize: number;
     perfection: number;
     maxPerfection: number;
+    statuses: StatusCollection;
   };
   enemy: {
     hp: number;
     maxHp: number;
     attackId: AttackId;
     intent: string;
+    statuses: StatusCollection;
   };
   hand: CombatCard[];
   drawPile: CombatCard[];
@@ -45,12 +48,6 @@ export type CombatState = {
   nextCardInstanceId: number;
   shuffleSeed: number;
   selectedCardId: string | null;
-  activeReactionBuffs: {
-    focus: boolean;
-    guard: boolean;
-    ripostePrep: boolean;
-    recoveryStep: boolean;
-  };
   currentEnemyPhaseSummary: EnemyPhaseSummary | null;
   lastEnemyPhaseSummary: EnemyPhaseSummary | null;
   log: string[];

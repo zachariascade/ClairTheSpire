@@ -10,6 +10,7 @@ import {
 } from "../game/combat/attackPatterns";
 import { cardDefinitions } from "../game/combat/cards";
 import { combatReducer, createInitialCombatState } from "../game/combat/reducer";
+import { hasStatus } from "../game/combat/statuses";
 import type { CombatCard, EnemyPhaseSummary, ReactionResult } from "../game/combat/types";
 import { PhaserBattlefield, type PhaserBattlefieldHandle } from "./PhaserBattlefield";
 import { TargetingOverlay } from "./TargetingOverlay";
@@ -231,13 +232,13 @@ export function App() {
     }
 
     resolvedHitIdsRef.current.add(hitIndex);
-    const recoveryCatches = result === "REACTION_FAILED" && state.activeReactionBuffs.recoveryStep;
+    const recoveryCatches = result === "REACTION_FAILED" && hasStatus(state.player.statuses, "recovery-step");
     const riposteCounters =
-      (result === "PARRY_PERFECT" || result === "PARRY_NORMAL") && state.activeReactionBuffs.ripostePrep;
+      (result === "PARRY_PERFECT" || result === "PARRY_NORMAL") && hasStatus(state.player.statuses, "riposte-prep");
     const tone = result === "HIT_TAKEN" || (result === "REACTION_FAILED" && !recoveryCatches) ? "bad" : "good";
     const displayLabel = recoveryCatches ? "Recovery" : riposteCounters ? "Riposte" : label;
     const baseDamage = result === "REACTION_FAILED" ? Math.max(1, hit.damage - 2) : hit.damage;
-    const mitigatedDamage = Math.max(0, baseDamage - (state.activeReactionBuffs.guard ? 5 : 0));
+    const mitigatedDamage = Math.max(0, baseDamage - (hasStatus(state.player.statuses, "guard") ? 5 : 0));
     const hpDamage = Math.max(0, mitigatedDamage - state.player.block);
 
     battlefieldRef.current?.showReactionLabel(displayLabel, tone);
@@ -273,8 +274,7 @@ export function App() {
   }, [
     completeEnemyAttackSoon,
     currentAttackPattern.hits.length,
-    state.activeReactionBuffs.recoveryStep,
-    state.activeReactionBuffs.ripostePrep,
+    state.player.statuses,
   ]);
 
   const resolveReactionInput = useCallback(
@@ -284,7 +284,7 @@ export function App() {
       }
 
       const elapsed = performance.now() - attackStartedAt;
-      const focusWindowBonus = state.activeReactionBuffs.focus ? 140 : 0;
+      const focusWindowBonus = hasStatus(state.player.statuses, "focus") ? 140 : 0;
       const nextHit = currentAttackPattern.hits
         .map((hit, index) => ({ hit, index, offset: Math.abs(elapsed - hit.atMs) }))
         .filter(({ index }) => !resolvedHitIdsRef.current.has(index))
@@ -325,7 +325,7 @@ export function App() {
       showTimingInputMarker(markerPercent, "miss");
       handleReactionResult(nextHit.index, nextHit.hit, "REACTION_FAILED", elapsed < nextHit.hit.atMs ? "Early" : "Late");
     },
-    [attackStartedAt, currentAttackPattern, handleReactionResult, showTimingInputMarker, state.activeReactionBuffs.focus],
+    [attackStartedAt, currentAttackPattern, handleReactionResult, showTimingInputMarker, state.player.statuses],
   );
 
   useEffect(() => {
