@@ -44,3 +44,11 @@ For a production check:
 ```sh
 npm run build
 ```
+
+## Deployment
+
+The `Deploy ClairTheSpire` GitHub Actions workflow publishes the Vite build to GitHub Pages on pushes to `main`.
+
+```sh
+npm run build:pages
+```
