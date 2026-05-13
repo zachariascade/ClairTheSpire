@@ -1,6 +1,7 @@
-export type CharacterId = "perfection" | "stance";
+export type CharacterId = "perfector" | "fencer";
 
-export type StanceId = "neutral" | "virtuoso" | "defensive" | "counter";
+export type StanceId = "neutral" | "offensive" | "virtuoso" | "defensive";
+export type PerfectionRank = "C" | "B" | "A" | "S";
 
 export type PerfectionMechanicState = {
   type: "perfection";

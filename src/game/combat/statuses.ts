@@ -1,4 +1,4 @@
-export type StatusId = "focus" | "guard" | "riposte-prep" | "recovery-step";
+export type StatusId = "focus" | "riposte-prep" | "recovery-step" | "vulnerable";
 
 export type StatusDuration = "untilTurnEnd" | "combat";
 

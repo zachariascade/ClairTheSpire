@@ -17,7 +17,6 @@ export type EnemyPhaseSummary = {
   hitsTaken: number;
   failedReactions: number;
   damageTaken: number;
-  guardPrevented: number;
   blockPrevented: number;
   recoverySaves: number;
   riposteDamage: number;

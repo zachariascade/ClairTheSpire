@@ -1,9 +1,9 @@
 import type { CharacterDefinition, CharacterId, CharacterMechanicState } from "./types";
 
 export const characterDefinitions: Record<CharacterId, CharacterDefinition> = {
-  perfection: {
-    id: "perfection",
-    name: "Perfection",
+  perfector: {
+    id: "perfector",
+    name: "Gutz",
     description: "Build momentum through clean reactions, then cash it in for a decisive finisher.",
     image: "gutz.png",
     maxHp: 60,
@@ -12,23 +12,22 @@ export const characterDefinitions: Record<CharacterId, CharacterDefinition> = {
     starterDeck: [
       "strike",
       "strike",
-      "strike",
+      "flurry",
       "guard",
       "guard",
-      "focus",
-      "focus",
+      "expose",
+      "guard",
       "riposte-prep",
-      "recovery-step",
       "crescendo",
     ],
     mechanics: {
       type: "perfection",
-      maxPerfection: 10,
+      maxPerfection: 100,
     },
   },
-  stance: {
-    id: "stance",
-    name: "Stance Fencer",
+  fencer: {
+    id: "fencer",
+    name: "Caska",
     description: "Sequence cards into posture changes, then end the turn in the stance that answers the attack.",
     image: "caska.png",
     maxHp: 58,
@@ -44,7 +43,7 @@ export const characterDefinitions: Record<CharacterId, CharacterDefinition> = {
       "riposte-line",
       "flow-state",
       "guard",
-      "focus",
+      "measure",
     ],
     mechanics: {
       type: "stance",
@@ -53,7 +52,7 @@ export const characterDefinitions: Record<CharacterId, CharacterDefinition> = {
   },
 };
 
-export const characterOrder: CharacterId[] = ["perfection", "stance"];
+export const characterOrder: CharacterId[] = ["perfector", "fencer"];
 
 export const createInitialMechanicState = (definition: CharacterDefinition): CharacterMechanicState => {
   if (definition.mechanics.type === "perfection") {

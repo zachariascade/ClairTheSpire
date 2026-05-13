@@ -9,6 +9,9 @@ coverage/
 # Local reference checkout
 CloudArena/
 
+# Local sound library; move sounds into public/audio before referencing them.
+local-audio-library/
+
 # Local environment
 .env
 .env.*

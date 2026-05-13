@@ -1,23 +1,48 @@
 import type { CombatEffect } from "./cards";
 import { getActiveEnemy, updateActiveEnemy } from "./enemies";
-import { addStatus } from "./statuses";
+import { addStatus, hasStatus } from "./statuses";
 import type { CombatState } from "./types";
 import type { StanceId } from "../characters/types";
+import { applyPerfectionDamageDealt, PERFECTION_GAIN_ON_ENEMY_HIT } from "../characters/perfection";
+import { applyStanceDamageDealt, applyStanceDamageReceived } from "../characters/stances";
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
 const appendLog = (state: CombatState, entry: string): string[] => [entry, ...state.log].slice(0, 6);
 
+const gainPerfectionFromEnemyHit = (state: CombatState, amount: number): CombatState => {
+  if (state.player.mechanic.type !== "perfection") {
+    return state;
+  }
+
+  return {
+    ...state,
+    player: {
+      ...state.player,
+      mechanic: {
+        ...state.player.mechanic,
+        perfection: clamp(state.player.mechanic.perfection + amount, 0, state.player.mechanic.maxPerfection),
+      },
+    },
+  };
+};
+
 export const dealDamage = (state: CombatState, target: "enemy" | "player", amount: number): CombatState => {
   if (target === "enemy") {
     const activeEnemy = getActiveEnemy(state);
-    const nextHp = clamp(activeEnemy.hp - amount, 0, activeEnemy.maxHp);
-
-    return updateActiveEnemy(
+    const baseDamage = applyPerfectionDamageDealt(state.player.mechanic, applyStanceDamageDealt(state, amount));
+    const damage = hasStatus(activeEnemy.statuses, "vulnerable") ? Math.round(baseDamage * 1.5) : baseDamage;
+    const nextHp = clamp(activeEnemy.hp - damage, 0, activeEnemy.maxHp);
+    const nextState = gainPerfectionFromEnemyHit(
       {
         ...state,
         phase: nextHp <= 0 ? "won" : state.phase,
       },
+      activeEnemy.hp > 0 && damage > 0 ? PERFECTION_GAIN_ON_ENEMY_HIT : 0,
+    );
+
+    return updateActiveEnemy(
+      nextState,
       (enemy) => ({
         ...enemy,
         hp: nextHp,
@@ -25,7 +50,8 @@ export const dealDamage = (state: CombatState, target: "enemy" | "player", amoun
     );
   }
 
-  const nextHp = clamp(state.player.hp - amount, 0, state.player.maxHp);
+  const damage = applyStanceDamageReceived(state, amount);
+  const nextHp = clamp(state.player.hp - damage, 0, state.player.maxHp);
 
   return {
     ...state,
@@ -44,9 +70,6 @@ export const gainBlock = (state: CombatState, amount: number): CombatState => ({
     block: state.player.block + amount,
   },
 });
-
-const isInStance = (state: CombatState, stance: StanceId): boolean =>
-  state.player.mechanic.type === "stance" && state.player.mechanic.stance === stance;
 
 export const changeStance = (state: CombatState, stance: StanceId): CombatState => {
   if (state.player.mechanic.type !== "stance") {
@@ -107,6 +130,9 @@ const applyEffect = (state: CombatState, effect: CombatEffect): CombatState => {
   if (effect.type === "spendPerfectionDamage") {
     const perfection = nextState.player.mechanic.type === "perfection" ? nextState.player.mechanic.perfection : 0;
     const damage = effect.baseDamage + perfection * effect.damagePerPerfection;
+    const vulnerable = hasStatus(getActiveEnemy(nextState).statuses, "vulnerable");
+    const baseActualDamage = applyPerfectionDamageDealt(nextState.player.mechanic, applyStanceDamageDealt(nextState, damage));
+    const actualDamage = vulnerable ? Math.round(baseActualDamage * 1.5) : baseActualDamage;
     nextState = dealDamage(nextState, effect.target, damage);
     nextState = {
       ...nextState,
@@ -120,22 +146,12 @@ const applyEffect = (state: CombatState, effect: CombatEffect): CombatState => {
               }
             : nextState.player.mechanic,
       },
-      log: appendLog(nextState, `Crescendo spends Perfection for ${damage} damage.`),
+      log: appendLog(nextState, `Crescendo spends Perfection for ${actualDamage} damage.`),
     };
   }
 
   if (effect.type === "changeStance") {
     nextState = changeStance(nextState, effect.stance);
-  }
-
-  if (effect.type === "damageInStance") {
-    const damage = isInStance(nextState, effect.stance) ? effect.bonusAmount : effect.amount;
-    nextState = dealDamage(nextState, effect.target, damage);
-  }
-
-  if (effect.type === "gainBlockInStance") {
-    const block = isInStance(nextState, effect.stance) ? effect.bonusAmount : effect.amount;
-    nextState = gainBlock(nextState, block);
   }
 
   if (effect.type === "damagePerStanceTransition") {
@@ -145,7 +161,7 @@ const applyEffect = (state: CombatState, effect: CombatEffect): CombatState => {
     nextState = dealDamage(nextState, effect.target, damage);
     nextState = {
       ...nextState,
-      log: appendLog(nextState, `Flow State deals ${damage} damage.`),
+      log: appendLog(nextState, "Flow State releases."),
     };
   }
 

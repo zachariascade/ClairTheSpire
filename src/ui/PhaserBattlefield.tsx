@@ -10,6 +10,7 @@ export type PhaserBattlefieldHandle = {
   flashPlayer: () => void;
   parryPlayer: () => void;
   playCardImpact: (label: string) => void;
+  resetDefenseCooldowns: () => void;
   showFloatingText: (target: "player" | "enemy", text: string, tone?: "good" | "bad" | "neutral" | "damage" | "block") => void;
   showReactionLabel: (label: string, tone?: "good" | "bad" | "neutral") => void;
 };
@@ -17,12 +18,14 @@ export type PhaserBattlefieldHandle = {
 type PhaserBattlefieldProps = {
   phase: CombatPhase;
   attackId: AttackId;
+  backgroundPath: string;
+  playerSpritePath: string;
   onEnemyBoundsChange: (bounds: DOMRect) => void;
   onPlayerBoundsChange: (bounds: DOMRect) => void;
 };
 
 export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattlefieldProps>(
-  ({ phase, attackId, onEnemyBoundsChange, onPlayerBoundsChange }, ref) => {
+  ({ phase, attackId, backgroundPath, playerSpritePath, onEnemyBoundsChange, onPlayerBoundsChange }, ref) => {
     const hostRef = useRef<HTMLDivElement | null>(null);
     const gameRef = useRef<Phaser.Game | null>(null);
     const sceneRef = useRef<BattleScene | null>(null);
@@ -36,6 +39,7 @@ export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattl
       flashPlayer: () => sceneRef.current?.flashPlayer(),
       parryPlayer: () => sceneRef.current?.parryPlayer(),
       playCardImpact: (label: string) => sceneRef.current?.playCardImpact(label),
+      resetDefenseCooldowns: () => sceneRef.current?.resetDefenseCooldowns(),
       showFloatingText: (target, text, tone) => sceneRef.current?.showFloatingText(target, text, tone),
       showReactionLabel: (label: string, tone?: "good" | "bad" | "neutral") => sceneRef.current?.showReactionLabel(label, tone),
     }));
@@ -71,6 +75,8 @@ export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattl
       gameRef.current = game;
 
       game.scene.add("BattleScene", BattleScene, true, {
+        backgroundPath,
+        playerSpritePath,
         onEnemyBoundsChange: (bounds: DOMRect) => callbacksRef.current.onEnemyBoundsChange(bounds),
         onPlayerBoundsChange: (bounds: DOMRect) => callbacksRef.current.onPlayerBoundsChange(bounds),
       });
@@ -83,7 +89,7 @@ export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattl
         gameRef.current = null;
         sceneRef.current = null;
       };
-    }, []);
+    }, [backgroundPath, playerSpritePath]);
 
     useEffect(() => {
       const scene = sceneRef.current;

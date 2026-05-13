@@ -10,19 +10,22 @@ export type BattleSceneEvents = {
   onPlayerBoundsChange: (bounds: DOMRect) => void;
 };
 
-type SceneData = BattleSceneEvents;
+type SceneData = BattleSceneEvents & {
+  backgroundPath?: string;
+  playerSpritePath?: string;
+};
 
-const BATTLEFIELD_BACKGROUND_KEY = "castle-background";
+const BATTLEFIELD_BACKGROUND_KEY = "battlefield-background";
 const PLAYER_SPRITE_KEY = "gutz-player";
 const ENEMY_SPRITE_KEY = "griffith-enemy";
 const publicAssetPath = (filename: string) => `${import.meta.env.BASE_URL}${filename}`;
-const BATTLEFIELD_BACKGROUND_PATH = publicAssetPath("castle-background.png");
-const PLAYER_SPRITE_PATH = publicAssetPath("gutz.png");
 const ENEMY_SPRITE_PATH = publicAssetPath("griffith.png");
 const ACTOR_SPRITE_MAX_WIDTH = 220;
 const ACTOR_SPRITE_MAX_HEIGHT = 300;
 const ACTOR_BOUNDS_WIDTH = 210;
 const ACTOR_BOUNDS_HEIGHT = 315;
+const PLAYER_BOTTOM_OFFSET = 315;
+const ENEMY_BOTTOM_OFFSET = 330;
 const DEFENSE_ANIMATION_COOLDOWN_MS = 520;
 
 export class BattleScene extends Phaser.Scene {
@@ -36,6 +39,8 @@ export class BattleScene extends Phaser.Scene {
   private attackCue?: Phaser.GameObjects.Text;
   private attackTimers: Phaser.Time.TimerEvent[] = [];
   private eventsBridge!: BattleSceneEvents;
+  private backgroundPath = publicAssetPath("castle-background.png");
+  private playerSpritePath = publicAssetPath("gutz.png");
   private phase: CombatPhase = "playerTurn";
   private attackId: AttackId = "quick-slash";
   private attackRunning = false;
@@ -48,11 +53,13 @@ export class BattleScene extends Phaser.Scene {
 
   init(data: SceneData) {
     this.eventsBridge = data;
+    this.backgroundPath = data.backgroundPath ?? publicAssetPath("castle-background.png");
+    this.playerSpritePath = data.playerSpritePath ?? publicAssetPath("gutz.png");
   }
 
   preload() {
-    this.load.image(BATTLEFIELD_BACKGROUND_KEY, BATTLEFIELD_BACKGROUND_PATH);
-    this.load.image(PLAYER_SPRITE_KEY, PLAYER_SPRITE_PATH);
+    this.load.image(BATTLEFIELD_BACKGROUND_KEY, this.backgroundPath);
+    this.load.image(PLAYER_SPRITE_KEY, this.playerSpritePath);
     this.load.image(ENEMY_SPRITE_KEY, ENEMY_SPRITE_PATH);
   }
 
@@ -69,8 +76,8 @@ export class BattleScene extends Phaser.Scene {
     this.atmosphere = this.add.rectangle(width / 2, height / 2, width, height, 0x020914, 0.16);
     this.atmosphere.setDepth(-19);
 
-    this.playerHome = { x: width * 0.25, y: height - 360 };
-    this.enemyHome = { x: width * 0.75, y: height - 375 };
+    this.playerHome = { x: width * 0.25, y: height - PLAYER_BOTTOM_OFFSET };
+    this.enemyHome = { x: width * 0.75, y: height - ENEMY_BOTTOM_OFFSET };
 
     this.player = this.createPlayerActor(this.playerHome.x, this.playerHome.y);
     this.enemy = this.createEnemyActor(this.enemyHome.x, this.enemyHome.y);
@@ -100,6 +107,11 @@ export class BattleScene extends Phaser.Scene {
     if (phase !== "enemyAttack" && this.attackRunning) {
       this.completeEnemyAttack();
     }
+  }
+
+  resetDefenseCooldowns() {
+    this.parryReadyAt = 0;
+    this.dodgeReadyAt = 0;
   }
 
   flashEnemy() {
@@ -379,13 +391,12 @@ export class BattleScene extends Phaser.Scene {
     }
 
     const container = this.add.container(x, y);
-    const shadow = this.add.ellipse(0, 62, 132, 24, 0x000000, 0.38);
     const sprite = this.add.image(0, 0, ENEMY_SPRITE_KEY);
 
     sprite.setOrigin(0.5, 0.72);
     sprite.setFlipX(true);
     this.fitSpriteToBox(sprite, ACTOR_SPRITE_MAX_WIDTH, ACTOR_SPRITE_MAX_HEIGHT);
-    container.add([shadow, sprite]);
+    container.add(sprite);
     return container;
   }
 
@@ -416,7 +427,17 @@ export class BattleScene extends Phaser.Scene {
       return;
     }
 
-    this.runThreeHitComboVisual(pattern);
+    if (pattern.id === "three-hit-combo") {
+      this.runThreeHitComboVisual(pattern);
+      return;
+    }
+
+    if (pattern.id === "shield-breaker") {
+      this.runShieldBreakerVisual(pattern);
+      return;
+    }
+
+    this.runOrbitalLaserVisual(pattern);
   }
 
   private runQuickSlashVisual(pattern: AttackPattern) {
@@ -471,6 +492,70 @@ export class BattleScene extends Phaser.Scene {
       }));
       this.queueHitVisual(hit.atMs, angles[index], index === 2 ? 140 : 80);
     }
+  }
+
+  private runOrbitalLaserVisual(pattern: AttackPattern) {
+    this.resetEnemyPose();
+    this.tweenWeapon({ angle: -18, scaleY: 0.92, duration: 260, ease: "Sine.easeOut" });
+
+    for (const [index, hit] of pattern.hits.entries()) {
+      this.attackTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 280), () => {
+        const turn = (index / pattern.hits.length) * Math.PI * 2 - Math.PI / 2;
+        this.pulseActor(this.enemy, 1.035, 120);
+        this.showImpactBurst(
+          this.enemyHome.x + Math.cos(turn) * 172,
+          this.enemyHome.y - 78 + Math.sin(turn) * 172,
+          0xf5cf72,
+        );
+      }));
+
+      this.attackTimers.push(this.time.delayedCall(hit.atMs, () => {
+        this.showImpactBurst(this.player.x + 20, this.player.y - 58, 0xfff3bd);
+        this.cameras.main.shake(index === pattern.hits.length - 1 ? 130 : 72, 0.0035);
+      }));
+    }
+  }
+
+  private runShieldBreakerVisual(pattern: AttackPattern) {
+    this.resetEnemyPose();
+    const hit = pattern.hits[0];
+
+    this.enemy.setScale(1.04);
+    this.tweenWeapon({
+      angle: -104,
+      scaleY: 1.28,
+      duration: Math.max(220, hit.atMs - 220),
+      ease: "Sine.easeInOut",
+    });
+
+    this.tweens.add({
+      targets: this.enemy,
+      y: this.enemyHome.y - 22,
+      scaleX: 1.1,
+      scaleY: 1.12,
+      duration: Math.max(180, hit.atMs - 180),
+      ease: "Sine.easeInOut",
+    });
+
+    this.attackTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 360), () => {
+      this.showImpactBurst(this.enemyHome.x - 16, this.enemyHome.y - 112, 0x8fa0de);
+      this.pulseActor(this.enemy, 1.08, 160);
+    }));
+
+    this.attackTimers.push(this.time.delayedCall(hit.atMs, () => {
+      this.tweenWeapon({ angle: 92, scaleY: 1, duration: 160, ease: "Quad.easeIn" });
+      this.tweens.add({
+        targets: this.enemy,
+        x: this.enemyHome.x,
+        y: this.enemyHome.y,
+        scaleX: 1,
+        scaleY: 1,
+        duration: 170,
+        ease: "Back.easeOut",
+      });
+      this.showImpactBurst(this.player.x + 20, this.player.y - 58, 0x8fa0de);
+      this.cameras.main.shake(190, 0.005);
+    }));
   }
 
   private queueHitVisual(atMs: number, angle: number, shakeMs: number) {
@@ -642,6 +727,12 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private handleResize() {
+    const { width, height } = this.scale;
+
+    this.playerHome = { x: width * 0.25, y: height - PLAYER_BOTTOM_OFFSET };
+    this.enemyHome = { x: width * 0.75, y: height - ENEMY_BOTTOM_OFFSET };
+    this.player.setPosition(this.playerHome.x, this.playerHome.y);
+    this.enemy.setPosition(this.enemyHome.x, this.enemyHome.y);
     this.fitBackgroundToCanvas();
     this.fitAtmosphereToCanvas();
     this.publishActorBounds();
@@ -672,7 +763,9 @@ export class BattleScene extends Phaser.Scene {
 
   private setTextureSmoothing() {
     this.textures.get(BATTLEFIELD_BACKGROUND_KEY).setFilter(Phaser.Textures.FilterMode.LINEAR);
-    this.textures.get(PLAYER_SPRITE_KEY).setFilter(Phaser.Textures.FilterMode.LINEAR);
+    if (this.textures.exists(PLAYER_SPRITE_KEY)) {
+      this.textures.get(PLAYER_SPRITE_KEY).setFilter(Phaser.Textures.FilterMode.LINEAR);
+    }
     this.textures.get(ENEMY_SPRITE_KEY).setFilter(Phaser.Textures.FilterMode.LINEAR);
   }
 

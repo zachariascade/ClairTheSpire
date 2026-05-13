@@ -8,13 +8,20 @@ import {
   type AttackId,
   type AttackPattern,
 } from "../game/combat/attackPatterns";
-import { cardDefinitions } from "../game/combat/cards";
+import { cardDefinitions, type CardDefinition, type CardPresentationDamage, type CardPresentationStep } from "../game/combat/cards";
 import { getActiveEnemy } from "../game/combat/enemies";
 import { combatReducer, createInitialCombatState, getReactionTimingModifiers } from "../game/combat/reducer";
-import { hasStatus } from "../game/combat/statuses";
+import { getStatusStacks, hasStatus, type StatusCollection, type StatusId } from "../game/combat/statuses";
 import type { CombatCard, EnemyPhaseSummary, ReactionResult } from "../game/combat/types";
+import { playSfx, preloadSfx } from "../game/audio/audioManager";
 import { characterDefinitions, characterOrder } from "../game/characters/definitions";
-import type { CharacterId, CharacterMechanicState, StanceId } from "../game/characters/types";
+import {
+  getPerfectionDamageDealtMultiplier,
+  getPerfectionRank,
+  perfectionRankRules,
+} from "../game/characters/perfection";
+import { stanceRules } from "../game/characters/stances";
+import type { CharacterId, CharacterMechanicState } from "../game/characters/types";
 import { PhaserBattlefield, type PhaserBattlefieldHandle } from "./PhaserBattlefield";
 import { TargetingOverlay } from "./TargetingOverlay";
 
@@ -34,73 +41,390 @@ type TimingInputMarker = {
   percent: number;
   tone: "perfect" | "parry" | "dodge" | "miss";
 };
+type ResolvedCardPresentationStep = {
+  delayMs: number;
+  target: "player" | "enemy";
+  text: string;
+  tone: BattlefieldTextTone;
+  impact: boolean;
+  animation?: "slash" | "heavy";
+};
+type BackgroundOption = {
+  id: string;
+  name: string;
+  image: string;
+};
+type MusicPlaybackState = "off" | "loading" | "on" | "missing";
+type AppRoute = "root" | "battle";
+type UrlSelection = {
+  characterId: CharacterId;
+  backgroundId: string;
+};
+type StatusDisplayDefinition = {
+  description: string;
+  label: string;
+  shortLabel: string;
+  tone: "good" | "bad" | "neutral";
+};
+type CardKeywordDefinition = {
+  aliases: string[];
+  description: string;
+  label: string;
+};
 
 const TURN_BANNER_DURATION_MS = 1300;
 const PLAYER_TURN_AFTER_ENEMY_PAUSE_MS = 750;
+const backgroundOptions: BackgroundOption[] = [
+  {
+    id: "castle",
+    name: "Castle",
+    image: "castle-background.png",
+  },
+  {
+    id: "battlefield",
+    name: "Battlefield",
+    image: "battlefield-background.png",
+  },
+];
+const soundtrack = {
+  title: "RPG Main Theme",
+  artist: "OpenGameArt",
+  sourceUrl: "https://opengameart.org/content/rpg-main-theme",
+  audioPath: "https://opengameart.org/sites/default/files/maintheme.mp3",
+  volume: 0.34,
+};
 
-const getCardBattlefieldEffect = (
-  definitionId: string,
+const defaultUrlSelection: UrlSelection = {
+  characterId: "perfector",
+  backgroundId: backgroundOptions[0].id,
+};
+const statusDisplayDefinitions: Record<StatusId, StatusDisplayDefinition> = {
+  focus: {
+    label: "Focus",
+    shortLabel: "Fo",
+    tone: "good",
+    description: "Widens parry and dodge timing windows. Perfector gains extra Perfection from parries.",
+  },
+  "recovery-step": {
+    label: "Recovery Step",
+    shortLabel: "Re",
+    tone: "good",
+    description: "The next failed reaction this turn causes no damage and no Perfection loss.",
+  },
+  "riposte-prep": {
+    label: "Counter Attack",
+    shortLabel: "Co",
+    tone: "good",
+    description: "This turn, all parries counter for 3 damage before damage modifiers.",
+  },
+  vulnerable: {
+    label: "Vulnerable",
+    shortLabel: "Vu",
+    tone: "bad",
+    description: "Takes 50% more damage from attacks and counters. Loses 1 stack after each enemy turn.",
+  },
+};
+const cardKeywordDefinitions: CardKeywordDefinition[] = [
+  {
+    label: "Block",
+    aliases: ["block"],
+    description: "Prevents incoming attack damage before HP is lost.",
+  },
+  {
+    label: "Vulnerable",
+    aliases: ["vulnerable", "vulneralble"],
+    description: "Takes 50% more damage from attacks and counters.",
+  },
+  {
+    label: "Weak",
+    aliases: ["weak"],
+    description: "Deals reduced attack damage while active.",
+  },
+];
+
+const normalizeCharacterId = (value: string | null): CharacterId | null => {
+  if (value === "perfection") {
+    return "perfector";
+  }
+
+  if (value === "stance") {
+    return "fencer";
+  }
+
+  return value !== null && value in characterDefinitions ? (value as CharacterId) : null;
+};
+
+const isBackgroundId = (value: string | null): value is string =>
+  value !== null && backgroundOptions.some((background) => background.id === value);
+
+const readUrlSelection = (): UrlSelection => {
+  const params = new URLSearchParams(window.location.search);
+  const character = params.get("character");
+  const scene = params.get("scene");
+
+  return {
+    characterId: normalizeCharacterId(character) ?? defaultUrlSelection.characterId,
+    backgroundId: isBackgroundId(scene) ? scene : defaultUrlSelection.backgroundId,
+  };
+};
+
+const getBasePath = () => {
+  const base = import.meta.env.BASE_URL;
+  return base.endsWith("/") ? base.slice(0, -1) : base;
+};
+
+const getRoute = (): AppRoute => {
+  const basePath = getBasePath();
+  const routePath = window.location.pathname.slice(basePath.length) || "/";
+
+  return routePath === "/battle" ? "battle" : "root";
+};
+
+const getRoutePath = (route: AppRoute) => {
+  const basePath = getBasePath();
+  return `${basePath}${route === "battle" ? "/battle" : "/"}`;
+};
+
+const writeUrlSelection = (selection: UrlSelection, route: AppRoute, mode: "push" | "replace" = "replace") => {
+  const url = new URL(window.location.href);
+  url.pathname = getRoutePath(route);
+  url.searchParams.set("character", selection.characterId);
+  url.searchParams.set("scene", selection.backgroundId);
+  url.searchParams.delete("screen");
+
+  if (mode === "push") {
+    window.history.pushState(null, "", url);
+    return;
+  }
+
+  window.history.replaceState(null, "", url);
+};
+
+const getDamageMultiplier = (mechanic: CharacterMechanicState, enemyIsVulnerable = false) =>
+  (mechanic.type === "stance" ? stanceRules[mechanic.stance].damageDealt : 1) *
+  getPerfectionDamageDealtMultiplier(mechanic) *
+  (enemyIsVulnerable ? 1.5 : 1);
+
+const getPresentationDamage = (
+  damage: CardPresentationDamage,
   mechanic: CharacterMechanicState,
-): { target: "player" | "enemy"; text: string; tone: BattlefieldTextTone; impact?: boolean } | null => {
+  enemyIsVulnerable = false,
+) => {
   const perfection = mechanic.type === "perfection" ? mechanic.perfection : 0;
-  const stance = mechanic.type === "stance" ? mechanic.stance : "neutral";
   const transitions = mechanic.type === "stance" ? mechanic.transitionsThisTurn : 0;
 
-  if (definitionId === "strike") {
-    return { target: "enemy", text: "-6", tone: "damage", impact: true };
+  if (damage.type === "fixed") {
+    return Math.round(damage.amount * getDamageMultiplier(mechanic, enemyIsVulnerable));
   }
 
-  if (definitionId === "crescendo") {
-    return { target: "enemy", text: `-${4 + perfection * 2}`, tone: "damage", impact: true };
+  if (damage.type === "spendPerfection") {
+    return Math.round(
+      (damage.baseDamage + perfection * damage.damagePerPerfection) * getDamageMultiplier(mechanic, enemyIsVulnerable),
+    );
   }
 
-  if (definitionId === "guard") {
-    return { target: "player", text: "+5 Block", tone: "block" };
+  return Math.round(
+    (damage.baseDamage + transitions * damage.damagePerTransition) * getDamageMultiplier(mechanic, enemyIsVulnerable),
+  );
+};
+
+const resolveCardPresentation = (
+  definition: CardDefinition,
+  mechanic: CharacterMechanicState,
+  enemyIsVulnerable = false,
+): ResolvedCardPresentationStep[] =>
+  definition.presentation.map((step: CardPresentationStep) => {
+    if (step.type === "attack") {
+      return {
+        delayMs: step.delayMs,
+        target: step.target,
+        text: `-${getPresentationDamage(step.damage, mechanic, enemyIsVulnerable)}`,
+        tone: "damage",
+        impact: true,
+        animation: step.animation,
+      };
+    }
+
+    if (step.type === "block") {
+      return {
+        delayMs: step.delayMs,
+        target: step.target,
+        text: `+${step.amount} Block`,
+        tone: "block",
+        impact: false,
+      };
+    }
+
+    if (step.type === "stance") {
+      return {
+        delayMs: step.delayMs,
+        target: step.target,
+        text: step.label,
+        tone: "good",
+        impact: false,
+      };
+    }
+
+    return {
+      delayMs: step.delayMs,
+      target: step.target,
+      text: step.label,
+      tone: step.tone,
+      impact: false,
+    };
+  });
+
+const getCurrentCardDamage = (
+  definition: CardDefinition,
+  mechanic: CharacterMechanicState,
+  enemyIsVulnerable = false,
+) => {
+  const damageEffect = definition.effects.find((effect) => effect.type === "damage" && effect.target === "enemy");
+  const transitionDamageEffect = definition.effects.find((effect) => effect.type === "damagePerStanceTransition");
+  const perfectionDamageEffect = definition.effects.find((effect) => effect.type === "spendPerfectionDamage");
+  const damageMultiplier = getDamageMultiplier(mechanic, enemyIsVulnerable);
+
+  if (damageEffect?.type === "damage") {
+    return {
+      baseDamage: damageEffect.amount,
+      displayedDamage: damageEffect.amount,
+      currentDamage: Math.round(damageEffect.amount * damageMultiplier),
+    };
   }
 
-  if (definitionId === "focus") {
-    return { target: "player", text: "Focus", tone: "good" };
+  if (transitionDamageEffect?.type === "damagePerStanceTransition") {
+    const transitions = mechanic.type === "stance" ? mechanic.transitionsThisTurn : 0;
+    const baseDamage = transitionDamageEffect.baseDamage + transitions * transitionDamageEffect.damagePerTransition;
+
+    return {
+      baseDamage,
+      displayedDamage: transitionDamageEffect.baseDamage,
+      currentDamage: Math.round(baseDamage * damageMultiplier),
+    };
   }
 
-  if (definitionId === "riposte-prep") {
-    return { target: "player", text: "Riposte Ready", tone: "good" };
-  }
+  if (perfectionDamageEffect?.type === "spendPerfectionDamage") {
+    const perfection = mechanic.type === "perfection" ? mechanic.perfection : 0;
+    const baseDamage = perfectionDamageEffect.baseDamage + perfection * perfectionDamageEffect.damagePerPerfection;
 
-  if (definitionId === "recovery-step") {
-    return { target: "player", text: "Recovery Ready", tone: "good" };
-  }
-
-  if (definitionId === "lunge") {
-    return { target: "enemy", text: `-${stance === "virtuoso" ? 8 : 5}`, tone: "damage", impact: true };
-  }
-
-  if (definitionId === "elegant-flourish") {
-    return { target: "enemy", text: "-5", tone: "damage", impact: true };
-  }
-
-  if (definitionId === "brace") {
-    return { target: "player", text: "Defensive", tone: "block" };
-  }
-
-  if (definitionId === "measure") {
-    return { target: "player", text: `+${stance === "defensive" ? 8 : 4} Block`, tone: "block" };
-  }
-
-  if (definitionId === "riposte-line") {
-    return { target: "player", text: "Counter", tone: "good" };
-  }
-
-  if (definitionId === "flow-state") {
-    return { target: "enemy", text: `-${6 + transitions * 3}`, tone: "damage", impact: true };
+    return {
+      baseDamage,
+      displayedDamage: perfectionDamageEffect.baseDamage,
+      currentDamage: Math.round(baseDamage * damageMultiplier),
+    };
   }
 
   return null;
 };
 
+const playCardSfx = (steps: ResolvedCardPresentationStep[]) => {
+  playSfx("ui.cardPlay", { volume: 0.48 });
+
+  for (const step of steps) {
+    if (step.impact) {
+      window.setTimeout(() => {
+        playSfx("combat.whoosh", {
+          volume: step.animation === "heavy" ? 0.5 : 0.38,
+          playbackRateVariance: step.animation === "heavy" ? 0.05 : 0.1,
+        });
+      }, step.delayMs);
+      window.setTimeout(() => {
+        playSfx("combat.swordClash", {
+          volume: step.animation === "heavy" ? 0.68 : 0.58,
+          playbackRateVariance: 0.08,
+        });
+      }, step.delayMs + (step.animation === "heavy" ? 230 : 115));
+      continue;
+    }
+
+    if (step.tone === "block") {
+      window.setTimeout(() => {
+        playSfx("combat.block", { volume: 0.5 });
+      }, step.delayMs);
+      continue;
+    }
+
+    window.setTimeout(() => {
+      playSfx(step.tone === "bad" ? "status.debuff" : "status.buff", { volume: 0.42, playbackRateVariance: 0.035 });
+    }, step.delayMs);
+  }
+};
+
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const getCardKeyword = (text: string) =>
+  cardKeywordDefinitions.find((keyword) => keyword.aliases.some((alias) => alias.toLowerCase() === text.toLowerCase()));
+const getCardRuleKeywords = (rulesText: string) =>
+  cardKeywordDefinitions.filter((keyword) =>
+    keyword.aliases.some((alias) => new RegExp(`\\b${escapeRegExp(alias)}\\b`, "i").test(rulesText)),
+  );
+
+const renderCardRulesText = (
+  definition: CardDefinition,
+  mechanic: CharacterMechanicState,
+  enemyIsVulnerable = false,
+) => {
+  const stanceEntries = Object.entries(stanceRules);
+  const stancePattern = stanceEntries.map(([, stance]) => escapeRegExp(stance.label)).join("|");
+  const keywordPattern = cardKeywordDefinitions
+    .flatMap((keyword) => keyword.aliases)
+    .map(escapeRegExp)
+    .join("|");
+  const damagePreview = getCurrentCardDamage(definition, mechanic, enemyIsVulnerable);
+  const damageNumberPattern =
+    damagePreview && damagePreview.currentDamage !== damagePreview.baseDamage
+      ? new RegExp(`(?<=\\bDeal\\s)${damagePreview.displayedDamage}\\b`)
+      : null;
+  const combinedPattern = new RegExp(
+    `${damageNumberPattern ? `(${damageNumberPattern.source})|` : ""}\\b(${stancePattern}|${keywordPattern})\\b`,
+    "gi",
+  );
+  const parts = definition.rulesText.split(combinedPattern).filter((part): part is string => part !== undefined && part !== "");
+
+  return parts.map((part, index) => {
+    const stance = stanceEntries.find(([, rule]) => rule.label.toLowerCase() === part.toLowerCase())?.[1];
+    const keyword = getCardKeyword(part);
+
+    if (stance) {
+      return (
+        <span className="card-rules-stance" style={{ "--stance-color": stance.color } as CSSProperties} key={`${part}-${index}`}>
+          {part}
+        </span>
+      );
+    }
+
+    if (keyword) {
+      return (
+        <strong className="card-rules-keyword" key={`${part}-${index}`}>
+          {part}
+        </strong>
+      );
+    }
+
+    if (damagePreview && damageNumberPattern && part === String(damagePreview.displayedDamage)) {
+      const tone = damagePreview.currentDamage > damagePreview.baseDamage ? "up" : "down";
+
+      return (
+        <span className={`card-rules-damage card-rules-damage-${tone}`} key={`${part}-${index}`}>
+          {damagePreview.currentDamage}
+        </span>
+      );
+    }
+
+    return part;
+  });
+};
+
 export function App() {
-  const [state, dispatch] = useReducer(combatReducer, undefined, createInitialCombatState);
-  const [selectedCharacterId, setSelectedCharacterId] = useState<CharacterId>("perfection");
-  const [screen, setScreen] = useState<"characterSelect" | "combat">("characterSelect");
+  const initialUrlSelection = useMemo(readUrlSelection, []);
+  const initialRoute = useMemo(getRoute, []);
+  const [state, dispatch] = useReducer(
+    combatReducer,
+    initialUrlSelection.characterId,
+    createInitialCombatState,
+  );
+  const [selectedCharacterId, setSelectedCharacterId] = useState<CharacterId>(initialUrlSelection.characterId);
+  const [selectedBackgroundId, setSelectedBackgroundId] = useState(initialUrlSelection.backgroundId);
+  const [route, setRoute] = useState<AppRoute>(initialRoute);
   const [enemyRect, setEnemyRect] = useState<DOMRect | null>(null);
   const [playerRect, setPlayerRect] = useState<DOMRect | null>(null);
   const [cardRects, setCardRects] = useState<CardRects>({});
@@ -115,11 +439,15 @@ export function App() {
   const [attackStartedAt, setAttackStartedAt] = useState<number | null>(null);
   const [showTimingAssist, setShowTimingAssist] = useState(true);
   const [debugCollapsed, setDebugCollapsed] = useState(true);
+  const [musicPlayback, setMusicPlayback] = useState<MusicPlaybackState>("off");
+  const [musicMenuExpanded, setMusicMenuExpanded] = useState(false);
   const battlefieldRef = useRef<PhaserBattlefieldHandle | null>(null);
+  const soundtrackRef = useRef<HTMLAudioElement | null>(null);
   const resolvedHitIdsRef = useRef<Set<number>>(new Set());
   const hadTargetCornerHoverRef = useRef(false);
   const targetCornerExitTimerRef = useRef<number | null>(null);
   const feedbackIdRef = useRef(0);
+  const previousPhaseRef = useRef(state.phase);
 
   const selectedCard = useMemo(
     () => state.hand.find((card) => card.instanceId === state.selectedCardId) ?? null,
@@ -135,12 +463,92 @@ export function App() {
   const isTargetHovered = isAimingEnemyCard ? isEnemyTargetHovered : isAimingPlayerCard ? isPlayerTargetHovered : false;
   const targetLabel = isAimingEnemyCard ? "enemy" : "player";
   const activeEnemy = getActiveEnemy(state);
+  const hoveredEnemyIsVulnerable = isAimingEnemyCard && isEnemyTargetHovered && hasStatus(activeEnemy.statuses, "vulnerable");
   const currentAttackPattern = attackPatterns[activeEnemy.attackId];
+  const enemyIntentRawDamage = currentAttackPattern.hits.reduce((total, hit) => total + hit.damage, 0);
+  const enemyIntentDamage =
+    state.player.mechanic.type === "stance"
+      ? Math.round(enemyIntentRawDamage * stanceRules[state.player.mechanic.stance].damageReceived)
+      : enemyIntentRawDamage;
+  const enemyIntentDamageTone =
+    enemyIntentDamage > enemyIntentRawDamage ? "boosted" : enemyIntentDamage < enemyIntentRawDamage ? "diminished" : "normal";
+  const enemyDefenseHint = currentAttackPattern.defense === "shield" ? "Shield only" : "A to parry, S to dodge";
+  const selectedBackground =
+    backgroundOptions.find((background) => background.id === selectedBackgroundId) ?? backgroundOptions[0];
 
   const startCombat = useCallback((characterId: CharacterId) => {
+    playSfx("ui.confirm", { volume: 0.44 });
     setSelectedCharacterId(characterId);
     dispatch({ type: "RESET_COMBAT", characterId });
-    setScreen("combat");
+    setRoute("battle");
+    writeUrlSelection(
+      {
+        characterId,
+        backgroundId: selectedBackgroundId,
+      },
+      "battle",
+      "push",
+    );
+  }, [selectedBackgroundId]);
+
+  useEffect(() => {
+    writeUrlSelection({
+      characterId: selectedCharacterId,
+      backgroundId: selectedBackgroundId,
+    }, route);
+  }, [route, selectedBackgroundId, selectedCharacterId]);
+
+  useEffect(() => {
+    preloadSfx([
+      "ui.cardHover",
+      "ui.cardPlay",
+      "ui.confirm",
+      "ui.turnStart",
+      "combat.block",
+      "combat.bodyHit",
+      "combat.heavyBodyHit",
+      "combat.laserCharge",
+      "combat.laserFire",
+      "combat.laserImpact",
+      "combat.metalBlock",
+      "combat.swordClash",
+      "combat.whoosh",
+      "status.buff",
+      "status.perfection",
+    ]);
+  }, []);
+
+  useEffect(() => {
+    const previousPhase = previousPhaseRef.current;
+    previousPhaseRef.current = state.phase;
+
+    if (previousPhase === state.phase) {
+      return;
+    }
+
+    if (state.phase === "playerTurn") {
+      playSfx("ui.turnStart", { volume: 0.38, cooldownMs: 240 });
+      return;
+    }
+
+  }, [state.phase]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      const nextSelection = readUrlSelection();
+      const nextRoute = getRoute();
+
+      setSelectedCharacterId(nextSelection.characterId);
+      setSelectedBackgroundId(nextSelection.backgroundId);
+      setRoute(nextRoute);
+
+      if (nextRoute === "battle") {
+        dispatch({ type: "RESET_COMBAT", characterId: nextSelection.characterId });
+      }
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
   const showActorFeedback = useCallback((target: "player" | "enemy", text: string, tone: ActorFeedback["tone"]) => {
@@ -167,17 +575,28 @@ export function App() {
   const playCard = useCallback(
     (card: CombatCard) => {
       const definition = cardDefinitions[card.definitionId];
-      const effect = getCardBattlefieldEffect(definition.id, state.player.mechanic);
+      const enemyIsVulnerable = hasStatus(activeEnemy.statuses, "vulnerable");
+      const presentation = resolveCardPresentation(definition, state.player.mechanic, enemyIsVulnerable);
+      playCardSfx(presentation);
       setAnimatingCardId(card.instanceId);
-      if (effect?.impact) {
-        battlefieldRef.current?.playCardImpact(effect.text);
-        showActorFeedback("enemy", effect.text, "damage");
-      } else if (effect) {
-        if (effect.tone !== "block") {
-          battlefieldRef.current?.showFloatingText(effect.target, effect.text, effect.tone);
-        }
-        showActorFeedback(effect.target, effect.text, effect.tone === "block" ? "block" : "good");
+
+      for (const step of presentation) {
+        window.setTimeout(() => {
+          if (step.impact) {
+            battlefieldRef.current?.playCardImpact(step.text);
+            showActorFeedback("enemy", step.text, "damage");
+            return;
+          }
+
+          if (step.tone !== "block") {
+            battlefieldRef.current?.showFloatingText(step.target, step.text, step.tone);
+          }
+          showActorFeedback(step.target, step.text, step.tone === "block" ? "block" : "good");
+        }, step.delayMs);
       }
+
+      const finalStepDelay = presentation.reduce((delay, step) => Math.max(delay, step.delayMs), 0);
+      const resolutionDelay = Math.max(definition.target === "enemy" ? 260 : 80, finalStepDelay + 370);
 
       window.setTimeout(() => {
         dispatch({ type: "PLAY_CARD", cardId: card.instanceId });
@@ -185,9 +604,9 @@ export function App() {
         setIsPlayerTargetHovered(false);
         setTargetPointer(null);
         setAnimatingCardId(null);
-      }, definition.target === "enemy" ? 260 : 80);
+      }, resolutionDelay);
     },
-    [showActorFeedback, state.player.mechanic],
+    [activeEnemy.statuses, showActorFeedback, state.player.mechanic],
   );
 
   const handleCardClick = useCallback(
@@ -199,6 +618,7 @@ export function App() {
         return;
       }
 
+      playSfx(state.selectedCardId === card.instanceId ? "ui.cancel" : "ui.cardHover", { volume: 0.34, cooldownMs: 80 });
       dispatch({
         type: "SELECT_CARD",
         cardId: state.selectedCardId === card.instanceId ? null : card.instanceId,
@@ -298,38 +718,54 @@ export function App() {
     const riposteCounters =
       (result === "PARRY_PERFECT" || result === "PARRY_NORMAL") && hasStatus(state.player.statuses, "riposte-prep");
     const tone = result === "HIT_TAKEN" || (result === "REACTION_FAILED" && !recoveryCatches) ? "bad" : "good";
-    const displayLabel = recoveryCatches ? "Recovery" : riposteCounters ? "Riposte" : label;
-    const baseDamage = result === "REACTION_FAILED" ? Math.max(1, hit.damage - 2) : hit.damage;
-    const stanceMitigation =
-      state.player.mechanic.type === "stance" && state.player.mechanic.stance === "defensive" ? 1 : 0;
-    const mitigatedDamage = Math.max(0, baseDamage - (hasStatus(state.player.statuses, "guard") ? 5 : 0) - stanceMitigation);
-    const hpDamage = Math.max(0, mitigatedDamage - state.player.block);
-    const riposteDamage =
-      state.player.mechanic.type === "stance" && state.player.mechanic.stance === "counter" ? 8 : 5;
+    const displayLabel = recoveryCatches ? "Recovery" : riposteCounters ? "Counter" : label;
+    const stanceDamageReceived =
+      state.player.mechanic.type === "stance" ? stanceRules[state.player.mechanic.stance].damageReceived : 1;
+    const baseDamage = Math.round(hit.damage * stanceDamageReceived);
+    const hpDamage = Math.max(0, baseDamage - state.player.block);
+    const stanceDamageDealt =
+      state.player.mechanic.type === "stance" ? stanceRules[state.player.mechanic.stance].damageDealt : 1;
+    const enemyIsVulnerable = hasStatus(activeEnemy.statuses, "vulnerable");
+    const riposteDamage = Math.round(
+      3 * stanceDamageDealt * getPerfectionDamageDealtMultiplier(state.player.mechanic) * (enemyIsVulnerable ? 1.5 : 1),
+    );
 
     battlefieldRef.current?.showReactionLabel(displayLabel, tone);
+    if (result === "PARRY_PERFECT" || result === "PARRY_NORMAL" || result === "DODGE_SUCCESS") {
+      battlefieldRef.current?.resetDefenseCooldowns();
+    }
     if (result === "HIT_TAKEN" || (result === "REACTION_FAILED" && !recoveryCatches)) {
       battlefieldRef.current?.flashPlayer();
+      playSfx(hpDamage > 0 ? "combat.laserImpact" : "combat.block", {
+        volume: hpDamage > 0 ? 0.66 : 0.5,
+        playbackRateVariance: 0.065,
+      });
       if (hpDamage > 0) {
         battlefieldRef.current?.showFloatingText("player", `-${hpDamage}`, "bad");
       }
       showActorFeedback("player", hpDamage > 0 ? `-${hpDamage}` : "Blocked", hpDamage > 0 ? "damage" : "block");
     }
     if (result === "REACTION_FAILED" && recoveryCatches) {
+      playSfx("status.buff", { volume: 0.44 });
       battlefieldRef.current?.showFloatingText("player", "Saved", "good");
       showActorFeedback("player", "Saved", "good");
     }
     if (result === "PARRY_PERFECT") {
+      playSfx("status.perfection", { volume: 0.52, cooldownMs: 80 });
+      playSfx("combat.metalBlock", { volume: 0.48, playbackRateVariance: 0.05 });
       battlefieldRef.current?.showFloatingText("player", "Perfect", "good");
       showActorFeedback("player", "Perfect", "perfect");
     }
     if (result === "PARRY_NORMAL") {
+      playSfx("combat.metalBlock", { volume: 0.48, playbackRateVariance: 0.05 });
       battlefieldRef.current?.showReactionLabel("Parry", "good");
     }
     if (result === "DODGE_SUCCESS") {
+      playSfx("combat.whoosh", { volume: 0.35, playbackRateVariance: 0.09 });
       battlefieldRef.current?.dodgePlayer();
     }
     if (riposteCounters) {
+      playSfx("combat.swordClash", { volume: 0.62, playbackRateVariance: 0.06 });
       battlefieldRef.current?.flashEnemy();
       battlefieldRef.current?.showFloatingText("enemy", `-${riposteDamage}`, "damage");
       showActorFeedback("enemy", `-${riposteDamage}`, "damage");
@@ -341,6 +777,7 @@ export function App() {
     }
   }, [
     completeEnemyAttackSoon,
+    activeEnemy.statuses,
     currentAttackPattern.hits.length,
     state.player.mechanic,
     state.player.statuses,
@@ -364,6 +801,12 @@ export function App() {
       }
 
       const markerPercent = Math.min(100, Math.max(0, (elapsed / getAttackDuration(currentAttackPattern)) * 100));
+
+      if (currentAttackPattern.defense === "shield") {
+        showTimingInputMarker(markerPercent, "miss");
+        battlefieldRef.current?.showReactionLabel("Shield Only", "bad");
+        return;
+      }
 
       if (input === "miss") {
         showTimingInputMarker(markerPercent, "miss");
@@ -431,10 +874,20 @@ export function App() {
         resolvedHitIdsRef.current.add(index);
         battlefieldRef.current?.showReactionLabel("Hit", "bad");
         battlefieldRef.current?.flashPlayer();
-        battlefieldRef.current?.showFloatingText("player", `-${hit.damage}`, "bad");
-        showActorFeedback("player", `-${hit.damage}`, "damage");
+        playSfx("combat.laserImpact", { volume: 0.66, playbackRateVariance: 0.065 });
+        const stanceDamageReceived =
+          state.player.mechanic.type === "stance" ? stanceRules[state.player.mechanic.stance].damageReceived : 1;
+        const baseDamage = Math.round(hit.damage * stanceDamageReceived);
+        const hpDamage = Math.max(0, baseDamage - state.player.block);
+        battlefieldRef.current?.showFloatingText("player", hpDamage > 0 ? `-${hpDamage}` : "Blocked", hpDamage > 0 ? "bad" : "block");
+        showActorFeedback("player", hpDamage > 0 ? `-${hpDamage}` : "Blocked", hpDamage > 0 ? "damage" : "block");
         dispatch({ type: "REACTION_RESULT", result: "HIT_TAKEN", damage: hit.damage, hitLabel: hit.label });
       }, hit.atMs + currentAttackPattern.dodgeWindowMs),
+    );
+    const beamTimers = currentAttackPattern.hits.map((hit) =>
+      window.setTimeout(() => {
+        playSfx("combat.laserFire", { volume: 0.5, playbackRateVariance: 0.08, cooldownMs: 40 });
+      }, hit.atMs),
     );
 
     const completionTimer = window.setTimeout(() => {
@@ -443,6 +896,9 @@ export function App() {
 
     return () => {
       for (const timer of hitTimers) {
+        window.clearTimeout(timer);
+      }
+      for (const timer of beamTimers) {
         window.clearTimeout(timer);
       }
       window.clearTimeout(completionTimer);
@@ -482,12 +938,57 @@ export function App() {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
-  if (screen === "characterSelect") {
+  useEffect(() => {
+    const audio = new Audio(soundtrack.audioPath);
+    audio.loop = true;
+    audio.preload = "none";
+    audio.volume = soundtrack.volume;
+    soundtrackRef.current = audio;
+
+    const handleError = () => setMusicPlayback("missing");
+    audio.addEventListener("error", handleError);
+
+    return () => {
+      audio.pause();
+      audio.removeEventListener("error", handleError);
+      soundtrackRef.current = null;
+    };
+  }, []);
+
+  const toggleMusic = useCallback(() => {
+    const audio = soundtrackRef.current;
+
+    if (!audio || musicPlayback === "missing") {
+      return;
+    }
+
+    if (musicPlayback === "on") {
+      audio.pause();
+      setMusicPlayback("off");
+      return;
+    }
+
+    setMusicPlayback("loading");
+    audio
+      .play()
+      .then(() => setMusicPlayback("on"))
+      .catch(() => setMusicPlayback("missing"));
+  }, [musicPlayback]);
+
+  if (route === "root") {
     return (
       <main className="app-shell">
+        <MusicToggle
+          expanded={musicMenuExpanded}
+          playback={musicPlayback}
+          onToggle={toggleMusic}
+          onToggleExpanded={() => setMusicMenuExpanded((expanded) => !expanded)}
+        />
         <CharacterSelectScreen
           selectedCharacterId={selectedCharacterId}
+          selectedBackgroundId={selectedBackgroundId}
           onSelect={setSelectedCharacterId}
+          onSelectBackground={setSelectedBackgroundId}
           onStart={() => startCombat(selectedCharacterId)}
         />
       </main>
@@ -497,10 +998,18 @@ export function App() {
   return (
     <main className="app-shell">
       <section className="combat-root" aria-label="Combat prototype">
+        <MusicToggle
+          expanded={musicMenuExpanded}
+          playback={musicPlayback}
+          onToggle={toggleMusic}
+          onToggleExpanded={() => setMusicMenuExpanded((expanded) => !expanded)}
+        />
         <PhaserBattlefield
           ref={battlefieldRef}
           phase={state.phase}
           attackId={activeEnemy.attackId}
+          backgroundPath={`${import.meta.env.BASE_URL}${selectedBackground.image}`}
+          playerSpritePath={`${import.meta.env.BASE_URL}${characterDefinitions[state.player.characterId].image}`}
           onEnemyBoundsChange={setEnemyRect}
           onPlayerBoundsChange={setPlayerRect}
         />
@@ -511,11 +1020,15 @@ export function App() {
 
         <TargetingOverlay
           activeCardRect={selectedCardRect}
-          pointer={isAimingTargetedCard ? targetPointer : null}
+          pointer={isAimingEnemyCard ? targetPointer : null}
           isAnimating={Boolean(animatingCardId)}
-          target={isAimingEnemyCard ? "enemy" : isAimingPlayerCard ? "player" : null}
+          target={isAimingEnemyCard ? "enemy" : null}
           isTargetHovered={isTargetHovered}
         />
+
+        {isAimingPlayerCard && selectedCard && targetPointer && (
+          <FloatingTargetCard card={selectedCard} mechanic={state.player.mechanic} pointer={targetPointer} />
+        )}
 
         {isAimingTargetedCard && targetBounds && (
           <button
@@ -570,17 +1083,26 @@ export function App() {
         <ActorFeedbackOverlay target="player" bounds={playerRect} feedback={playerFeedback} />
 
         <div className="top-hud">
-          <Meter label="HP" value={state.player.hp} max={state.player.maxHp} tone="red" />
+          <Meter
+            label="HP"
+            value={state.player.hp}
+            max={state.player.maxHp}
+            block={state.player.block}
+            statuses={state.player.statuses}
+            tone="red"
+          />
           <CharacterMechanicHud mechanic={state.player.mechanic} />
-          <Meter label="Enemy" value={activeEnemy.hp} max={activeEnemy.maxHp} tone="violet" />
+          <Meter label="Enemy" value={activeEnemy.hp} max={activeEnemy.maxHp} block={0} statuses={activeEnemy.statuses} tone="violet" />
         </div>
 
         <aside className="intent-panel">
-          <span>{characterDefinitions[state.player.characterId].name}</span>
           <span>Intent</span>
           <strong>{activeEnemy.intent}</strong>
+          <p className={`intent-damage intent-damage-${enemyIntentDamageTone}`}>
+            Damage: <strong>{enemyIntentDamage}</strong>
+          </p>
           <p className="phase-readout">Phase: {state.phase}</p>
-          <p>A to parry, S to dodge</p>
+          <p>{enemyDefenseHint}</p>
         </aside>
 
         <div className="left-rail">
@@ -620,7 +1142,9 @@ export function App() {
               <CombatCardView
                 key={card.instanceId}
                 card={card}
+                mechanic={state.player.mechanic}
                 selected={state.selectedCardId === card.instanceId}
+                enemyIsVulnerablePreview={state.selectedCardId === card.instanceId && hoveredEnemyIsVulnerable}
                 disabled={state.phase !== "playerTurn" || state.player.energy < cardDefinitions[card.definitionId].cost}
                 onBoundsChange={(rect) => setCardRects((rects) => ({ ...rects, [card.instanceId]: rect }))}
                 onPlay={() => handleCardClick(card)}
@@ -633,6 +1157,7 @@ export function App() {
             type="button"
             disabled={state.phase !== "playerTurn"}
             onClick={() => {
+              playSfx("ui.confirm", { volume: 0.4 });
               dispatch({ type: "END_TURN" });
             }}
           >
@@ -646,7 +1171,20 @@ export function App() {
             <button type="button" onClick={() => dispatch({ type: "RESET_COMBAT", characterId: state.player.characterId })}>
               Reset
             </button>
-            <button type="button" onClick={() => setScreen("characterSelect")}>
+            <button
+              type="button"
+              onClick={() => {
+                setRoute("root");
+                writeUrlSelection(
+                  {
+                    characterId: selectedCharacterId,
+                    backgroundId: selectedBackgroundId,
+                  },
+                  "root",
+                  "push",
+                );
+              }}
+            >
               Change Character
             </button>
           </div>
@@ -656,22 +1194,88 @@ export function App() {
   );
 }
 
-const stanceLabels: Record<StanceId, string> = {
-  neutral: "Neutral",
-  virtuoso: "Virtuoso",
-  defensive: "Defensive",
-  counter: "Counter",
-};
+function MusicToggle({
+  expanded,
+  playback,
+  onToggle,
+  onToggleExpanded,
+}: {
+  expanded: boolean;
+  playback: MusicPlaybackState;
+  onToggle: () => void;
+  onToggleExpanded: () => void;
+}) {
+  const disabled = playback === "loading" || playback === "missing";
+  const label =
+    playback === "on"
+      ? "Music On"
+      : playback === "loading"
+        ? "Loading"
+        : playback === "missing"
+          ? "Music Missing"
+          : "Music Off";
+  const menuLabel = expanded ? "Collapse music menu" : `Expand music menu (${label})`;
+  const statusGlyph = playback === "on" ? "||" : playback === "loading" ? "..." : ">";
+
+  return (
+    <div className={`music-control ${expanded ? "is-expanded" : ""}`} aria-label="Soundtrack">
+      <button
+        className={`music-menu-button music-menu-button-${playback}`}
+        type="button"
+        aria-expanded={expanded}
+        aria-label={menuLabel}
+        onClick={onToggleExpanded}
+        title={expanded ? "Collapse music menu" : `${soundtrack.title} by ${soundtrack.artist}`}
+      >
+        <span className="music-menu-note" aria-hidden="true">♪</span>
+        <span className="music-menu-status" aria-hidden="true">{statusGlyph}</span>
+      </button>
+      {expanded && (
+        <>
+          <button
+            className={`music-toggle music-toggle-${playback}`}
+            type="button"
+            disabled={disabled}
+            onClick={onToggle}
+            title={`${soundtrack.title} by ${soundtrack.artist}`}
+          >
+            <span className="music-toggle-icon" aria-hidden="true">
+              {playback === "on" ? "||" : ">"}
+            </span>
+            <span>{label}</span>
+          </button>
+          <a href={soundtrack.sourceUrl} target="_blank" rel="noreferrer">
+            {soundtrack.title} by {soundtrack.artist}
+          </a>
+        </>
+      )}
+    </div>
+  );
+}
 
 function CharacterSelectScreen({
   selectedCharacterId,
+  selectedBackgroundId,
   onSelect,
+  onSelectBackground,
   onStart,
 }: {
   selectedCharacterId: CharacterId;
+  selectedBackgroundId: string;
   onSelect: (characterId: CharacterId) => void;
+  onSelectBackground: (backgroundId: string) => void;
   onStart: () => void;
 }) {
+  const selectedBackgroundIndex = Math.max(
+    0,
+    backgroundOptions.findIndex((background) => background.id === selectedBackgroundId),
+  );
+  const selectedBackground = backgroundOptions[selectedBackgroundIndex] ?? backgroundOptions[0];
+  const selectRelativeBackground = (offset: number) => {
+    const nextIndex = (selectedBackgroundIndex + offset + backgroundOptions.length) % backgroundOptions.length;
+    onSelectBackground(backgroundOptions[nextIndex].id);
+  };
+
   return (
     <section className="character-select" aria-label="Choose character">
       <div className="character-select-header">
@@ -688,7 +1292,7 @@ function CharacterSelectScreen({
           const mechanicLabel =
             character.mechanics.type === "perfection"
               ? `Perfection ${character.mechanics.maxPerfection}`
-              : `${stanceLabels[character.mechanics.startingStance]} Stance`;
+              : `${stanceRules[character.mechanics.startingStance].label} Stance`;
 
           return (
             <button
@@ -711,29 +1315,92 @@ function CharacterSelectScreen({
           );
         })}
       </div>
+
+      <section className="background-gallery" aria-label="Choose background">
+        <div className="background-gallery-header">
+          <span>Background</span>
+          <strong>{selectedBackground.name}</strong>
+        </div>
+
+        <div className="background-gallery-stage">
+          <button
+            className="background-gallery-arrow"
+            type="button"
+            aria-label="Previous background"
+            onClick={() => selectRelativeBackground(-1)}
+          >
+            &lsaquo;
+          </button>
+
+          <div className="background-preview">
+            <img src={`${import.meta.env.BASE_URL}${selectedBackground.image}`} alt="" />
+          </div>
+
+          <button
+            className="background-gallery-arrow"
+            type="button"
+            aria-label="Next background"
+            onClick={() => selectRelativeBackground(1)}
+          >
+            &rsaquo;
+          </button>
+        </div>
+
+        <div className="background-options" aria-label="Background options">
+          {backgroundOptions.map((background) => {
+            const selected = selectedBackgroundId === background.id;
+
+            return (
+              <button
+                className={`background-option ${selected ? "is-selected" : ""}`}
+                key={background.id}
+                type="button"
+                aria-pressed={selected}
+                onClick={() => onSelectBackground(background.id)}
+              >
+                <img src={`${import.meta.env.BASE_URL}${background.image}`} alt="" />
+                <span>{background.name}</span>
+              </button>
+            );
+          })}
+        </div>
+      </section>
     </section>
   );
 }
 
 function CharacterMechanicHud({ mechanic }: { mechanic: CharacterMechanicState }) {
   if (mechanic.type === "perfection") {
-    return <Meter label="Perfection" value={mechanic.perfection} max={mechanic.maxPerfection} tone="gold" />;
+    const rank = getPerfectionRank(mechanic);
+    const bonusPercent = Math.round((perfectionRankRules[rank].damageDealt - 1) * 100);
+
+    return (
+      <div className="perfection-meter" aria-label="Perfection">
+        <div className="meter-label">
+          <span>Perfection</span>
+          <strong>
+            {rank} {bonusPercent > 0 ? `+${bonusPercent}%` : "No bonus"}
+          </strong>
+        </div>
+        <div className="meter-track">
+          <div className="meter-fill" style={{ width: `${(mechanic.perfection / mechanic.maxPerfection) * 100}%` }} />
+        </div>
+        <p>
+          {mechanic.perfection}/{mechanic.maxPerfection}
+        </p>
+      </div>
+    );
   }
 
+  const stance = stanceRules[mechanic.stance];
+
   return (
-    <div className="stance-meter" aria-label="Stance">
+    <div className="stance-meter" style={{ "--stance-color": stance.color } as CSSProperties} aria-label="Stance">
       <div className="meter-label">
         <span>Stance</span>
-        <strong>{stanceLabels[mechanic.stance]}</strong>
+        <strong>{stance.label}</strong>
       </div>
-      <div className="stance-meter-row">
-        {(["neutral", "virtuoso", "defensive", "counter"] as StanceId[]).map((stance) => (
-          <span className={mechanic.stance === stance ? "is-active" : ""} key={stance}>
-            {stanceLabels[stance]}
-          </span>
-        ))}
-      </div>
-      <div className="stance-transition-count">{mechanic.transitionsThisTurn} transition this turn</div>
+      <p>{stance.helperText}</p>
     </div>
   );
 }
@@ -752,9 +1419,6 @@ function EnemyPhaseSummaryPanel({ summary }: { summary: EnemyPhaseSummary | null
   }
 
   const defenses: string[] = [];
-  if (summary.guardPrevented > 0) {
-    defenses.push(`Guard prevented ${summary.guardPrevented}`);
-  }
   if (summary.blockPrevented > 0) {
     defenses.push(`Block prevented ${summary.blockPrevented}`);
   }
@@ -762,7 +1426,7 @@ function EnemyPhaseSummaryPanel({ summary }: { summary: EnemyPhaseSummary | null
     defenses.push(`Recovery saved ${summary.recoverySaves}`);
   }
   if (summary.riposteDamage > 0) {
-    defenses.push(`Riposte dealt ${summary.riposteDamage}`);
+    defenses.push(`Counter dealt ${summary.riposteDamage}`);
   }
 
   return (
@@ -829,8 +1493,37 @@ function EnemyAttackOverlay({
   const chargeProgress = nextHit ? Math.max(0, Math.min(1, (elapsed - chargeStartMs) / chargeDurationMs)) : 0;
   const msUntilNextHit = nextHit ? nextHit.atMs - elapsed : Number.POSITIVE_INFINITY;
   const chargePhase = activeHit ? "release" : msUntilNextHit <= 420 ? "shake" : "charge";
-  const startX = enemyBounds.left + enemyBounds.width * 0.28;
-  const startY = enemyBounds.top + enemyBounds.height * 0.3;
+  const enemyCenterX = enemyBounds.left + enemyBounds.width * 0.5;
+  const enemyCenterY = enemyBounds.top + enemyBounds.height * 0.36;
+  const isOrbitalLaser = pattern.id === "orbital-laser";
+  const singleStartX = enemyBounds.left + enemyBounds.width * 0.28;
+  const singleStartY = enemyBounds.top + enemyBounds.height * 0.3;
+  const orbitalRadius = Math.max(146, Math.min(210, Math.min(enemyBounds.width, enemyBounds.height) * 0.78));
+  const orbitalOrbSize = 58;
+  const orbitalOrbs = pattern.hits.map((hit, index) => {
+    const turn = (index / pattern.hits.length) * Math.PI * 2 - Math.PI / 2;
+    const lastHit = pattern.hits[index - 1];
+    const orbChargeStart = lastHit ? lastHit.atMs + beamDurationMs : 0;
+    const orbChargeDuration = Math.max(1, hit.atMs - orbChargeStart);
+    const isActive = activeHitIndex === index;
+    const isNext = nextHitIndex === index;
+    const isSpent = elapsed > hit.atMs + beamDurationMs;
+    const orbProgress = isActive ? 1 : isNext ? Math.max(0, Math.min(1, (elapsed - orbChargeStart) / orbChargeDuration)) : 0;
+    const phase = isActive ? "release" : isNext && hit.atMs - elapsed <= 420 ? "shake" : "charge";
+
+    return {
+      hit,
+      index,
+      isSpent,
+      phase,
+      progress: orbProgress,
+      x: enemyCenterX + Math.cos(turn) * orbitalRadius,
+      y: enemyCenterY + Math.sin(turn) * orbitalRadius,
+    };
+  });
+  const activeOrb = activeHitIndex >= 0 ? orbitalOrbs[activeHitIndex] : null;
+  const startX = activeOrb?.x ?? singleStartX;
+  const startY = activeOrb?.y ?? singleStartY;
   const endX = playerBounds.left + playerBounds.width * 0.66;
   const endY = playerBounds.top + playerBounds.height * 0.48;
   const midX = (startX + endX) / 2;
@@ -843,17 +1536,37 @@ function EnemyAttackOverlay({
 
   return (
     <>
-      <div
-        className={`enemy-attack-origin is-${chargePhase}`}
-        style={{
-          left: startX - orbSize / 2,
-          top: startY - orbSize / 2,
-          width: orbSize,
-          height: orbSize,
-          "--charge-progress": chargeProgress,
-        } as CSSProperties}
-        aria-hidden="true"
-      />
+      {isOrbitalLaser ? (
+        orbitalOrbs.map((orb) => (
+          <div
+            className={`enemy-attack-origin enemy-attack-origin-orbital is-${orb.phase} ${
+              orb.isSpent ? "is-spent" : ""
+            }`}
+            key={`${pattern.id}-orb-${orb.index}`}
+            style={{
+              left: orb.x - orbitalOrbSize / 2,
+              top: orb.y - orbitalOrbSize / 2,
+              width: orbitalOrbSize,
+              height: orbitalOrbSize,
+              "--charge-progress": orb.progress,
+              "--orb-index": orb.index,
+            } as CSSProperties}
+            aria-hidden="true"
+          />
+        ))
+      ) : (
+        <div
+          className={`enemy-attack-origin is-${chargePhase}`}
+          style={{
+            left: startX - orbSize / 2,
+            top: startY - orbSize / 2,
+            width: orbSize,
+            height: orbSize,
+            "--charge-progress": chargeProgress,
+          } as CSSProperties}
+          aria-hidden="true"
+        />
+      )}
       {activeHit && (
         <>
           <div
@@ -1010,11 +1723,11 @@ function DebugPanel({
             </div>
             <div>
               <dt>Parry</dt>
-              <dd>{currentAttack.normalParryWindowMs}ms</dd>
+              <dd>{currentAttack.defense === "shield" ? "No" : `${currentAttack.normalParryWindowMs}ms`}</dd>
             </div>
             <div>
               <dt>Dodge</dt>
-              <dd>{currentAttack.dodgeWindowMs}ms</dd>
+              <dd>{currentAttack.defense === "shield" ? "No" : `${currentAttack.dodgeWindowMs}ms`}</dd>
             </div>
           </dl>
 
@@ -1090,31 +1803,87 @@ function ReactionTimingBar({
   );
 }
 
-function Meter({ label, value, max, tone }: { label: string; value: number; max: number; tone: "red" | "gold" | "violet" }) {
+function Meter({
+  label,
+  value,
+  max,
+  block,
+  statuses,
+  tone,
+}: {
+  label: string;
+  value: number;
+  max: number;
+  block?: number;
+  statuses?: StatusCollection;
+  tone: "red" | "gold" | "violet";
+}) {
+  const activeStatuses = statuses
+    ? Object.values(statuses).filter((status): status is NonNullable<typeof status> => Boolean(status) && status.stacks > 0)
+    : [];
+
   return (
     <div className={`meter meter-${tone}`}>
       <div className="meter-label">
+        <span className="meter-vitals">
+          <strong>
+            {value}/{max}
+          </strong>
+          {block !== undefined && (
+            <span className="block-readout" aria-label={`${block} block`}>
+              <span className="block-shield" aria-hidden="true" />
+              <span>{block}</span>
+            </span>
+          )}
+        </span>
         <span>{label}</span>
-        <strong>
-          {value}/{max}
-        </strong>
       </div>
       <div className="meter-track">
         <div className="meter-fill" style={{ width: `${(value / max) * 100}%` }} />
       </div>
+      {activeStatuses.length > 0 && (
+        <div className="status-row" aria-label={`${label} statuses`}>
+          {activeStatuses.map((status) => {
+            const definition = statusDisplayDefinitions[status.id];
+            const title = `${definition.label}: ${definition.description}`;
+
+            return (
+              <span
+                className={`status-chip status-chip-${definition.tone}`}
+                key={status.id}
+                aria-label={`${title} ${status.stacks} stack${status.stacks === 1 ? "" : "s"}`}
+                tabIndex={0}
+              >
+                <span>{definition.shortLabel}</span>
+                {status.stacks > 1 && <strong>{status.stacks}</strong>}
+                <span className="card-keyword-tooltip status-tooltip" role="tooltip">
+                  <span className="card-keyword-tooltip-row">
+                    <strong>{definition.label}</strong>
+                    <span>{definition.description}</span>
+                  </span>
+                </span>
+              </span>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
 
 function CombatCardView({
   card,
+  mechanic,
   selected,
+  enemyIsVulnerablePreview,
   disabled,
   onBoundsChange,
   onPlay,
 }: {
   card: CombatCard;
+  mechanic: CharacterMechanicState;
   selected: boolean;
+  enemyIsVulnerablePreview: boolean;
   disabled: boolean;
   onBoundsChange: (rect: DOMRect) => void;
   onPlay: () => void;
@@ -1131,7 +1900,7 @@ function CombatCardView({
   return (
     <button
       ref={ref}
-      className={`combat-card ${selected ? "is-selected" : ""}`}
+      className={`combat-card combat-card-${definition.pool} ${selected ? "is-selected" : ""}`}
       type="button"
       disabled={disabled}
       onMouseEnter={updateBounds}
@@ -1141,6 +1910,49 @@ function CombatCardView({
         onPlay();
       }}
     >
+      <CombatCardFace definition={definition} mechanic={mechanic} enemyIsVulnerablePreview={enemyIsVulnerablePreview} />
+    </button>
+  );
+}
+
+function FloatingTargetCard({
+  card,
+  mechanic,
+  pointer,
+}: {
+  card: CombatCard;
+  mechanic: CharacterMechanicState;
+  pointer: PointerPoint;
+}) {
+  const definition = cardDefinitions[card.definitionId];
+
+  return (
+    <div
+      className={`combat-card combat-card-${definition.pool} drag-card-preview`}
+      style={{
+        left: pointer.x,
+        top: pointer.y,
+      }}
+      aria-hidden="true"
+    >
+      <CombatCardFace definition={definition} mechanic={mechanic} enemyIsVulnerablePreview={false} />
+    </div>
+  );
+}
+
+function CombatCardFace({
+  definition,
+  mechanic,
+  enemyIsVulnerablePreview,
+}: {
+  definition: CardDefinition;
+  mechanic: CharacterMechanicState;
+  enemyIsVulnerablePreview: boolean;
+}) {
+  const keywords = getCardRuleKeywords(definition.rulesText);
+
+  return (
+    <>
       <span className="card-cost">{definition.cost}</span>
       <span className={`card-title ${definition.name.length > 10 ? "card-title-long" : ""}`} title={definition.name}>
         {definition.name}
@@ -1152,7 +1964,19 @@ function CombatCardView({
         <span className="card-art-spark" />
       </span>
       <span className="card-kind">{definition.kind}</span>
-      <span className="card-rules">{definition.rulesText}</span>
-    </button>
+      <span className="card-rules">
+        <span className="card-rules-copy">{renderCardRulesText(definition, mechanic, enemyIsVulnerablePreview)}</span>
+      </span>
+      {keywords.length > 0 && (
+        <span className="card-keyword-tooltip" role="tooltip">
+          {keywords.map((keyword) => (
+            <span className="card-keyword-tooltip-row" key={keyword.label}>
+              <strong>{keyword.label}</strong>
+              <span>{keyword.description}</span>
+            </span>
+          ))}
+        </span>
+      )}
+    </>
   );
 }
