@@ -13,11 +13,12 @@ export type BattleSceneEvents = {
 type SceneData = BattleSceneEvents;
 
 const BATTLEFIELD_BACKGROUND_KEY = "castle-background";
-const BATTLEFIELD_BACKGROUND_PATH = "/castle-background.png";
 const PLAYER_SPRITE_KEY = "gutz-player";
-const PLAYER_SPRITE_PATH = "/gutz.png";
 const ENEMY_SPRITE_KEY = "griffith-enemy";
-const ENEMY_SPRITE_PATH = "/griffith.png";
+const publicAssetPath = (filename: string) => `${import.meta.env.BASE_URL}${filename}`;
+const BATTLEFIELD_BACKGROUND_PATH = publicAssetPath("castle-background.png");
+const PLAYER_SPRITE_PATH = publicAssetPath("gutz.png");
+const ENEMY_SPRITE_PATH = publicAssetPath("griffith.png");
 const ACTOR_SPRITE_MAX_WIDTH = 220;
 const ACTOR_SPRITE_MAX_HEIGHT = 300;
 const ACTOR_BOUNDS_WIDTH = 210;
