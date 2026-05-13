@@ -30,7 +30,7 @@ export const characterDefinitions: Record<CharacterId, CharacterDefinition> = {
     id: "stance",
     name: "Stance Fencer",
     description: "Sequence cards into posture changes, then end the turn in the stance that answers the attack.",
-    image: "gutz.png",
+    image: "caska.png",
     maxHp: 58,
     maxEnergy: 3,
     handSize: 5,
