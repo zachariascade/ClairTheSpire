@@ -1,9 +1,17 @@
 import Phaser from "phaser";
-import { attackPatterns, type AttackId, type AttackPattern } from "../game/combat/attackPatterns";
-import type { CombatPhase, EnemyCombatant } from "../game/combat/types";
+import {
+  attackPatterns,
+  getAttackDuration,
+  type AttackHit,
+  type AttackId,
+  type AttackPattern,
+} from "../game/combat/attackPatterns";
+import type { CombatPhase, EnemyCombatant, ReactionResult } from "../game/combat/types";
 
 type EffectTarget = "player" | "enemy";
 type EffectTone = "good" | "bad" | "neutral" | "damage" | "block";
+type ReactionInput = "parry" | "dodge" | "miss";
+type TimingInputTone = "perfect" | "parry" | "dodge" | "miss";
 type EnemySceneState = Pick<EnemyCombatant, "id" | "image" | "hp" | "maxHp">;
 type EnemyActorTarget = {
   actor: Phaser.GameObjects.Container;
@@ -11,9 +19,20 @@ type EnemyActorTarget = {
 };
 
 export type BattleSceneEvents = {
+  onAttackComplete: () => void;
+  onAttackImpact: (event: { hit: AttackHit; hitIndex: number }) => void;
+  onAttackStarted: (startedAt: number) => void;
   onEnemyBoundsChange: (bounds: DOMRect) => void;
   onEnemyBoundsListChange: (bounds: Record<string, DOMRect>) => void;
   onPlayerBoundsChange: (bounds: DOMRect) => void;
+  onReactionResolved: (event: {
+    hit: AttackHit;
+    hitIndex: number;
+    label: string;
+    result: ReactionResult;
+  }) => void;
+  onSceneReady: (scene: BattleScene) => void;
+  onTimingInput: (event: { percent: number; tone: TimingInputTone }) => void;
 };
 
 type SceneData = BattleSceneEvents & {
@@ -34,6 +53,7 @@ const ACTOR_BOUNDS_HEIGHT = 315;
 const PLAYER_BOTTOM_OFFSET = 245;
 const ENEMY_BOTTOM_OFFSET = 270;
 const DEFENSE_ANIMATION_COOLDOWN_MS = 520;
+const PLAYER_TURN_AFTER_ENEMY_PAUSE_MS = 750;
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
 export class BattleScene extends Phaser.Scene {
@@ -48,7 +68,8 @@ export class BattleScene extends Phaser.Scene {
   private enemyHomes: Array<{ x: number; y: number }> = [];
   private playerHome = { x: 0, y: 0 };
   private attackCue?: Phaser.GameObjects.Text;
-  private attackTimers: Phaser.Time.TimerEvent[] = [];
+  private attackResolutionTimers: Phaser.Time.TimerEvent[] = [];
+  private attackVisualTimers: Phaser.Time.TimerEvent[] = [];
   private eventsBridge!: BattleSceneEvents;
   private backgroundPath = publicAssetPath("castle-background.png");
   private playerSpritePath = publicAssetPath("gutz.png");
@@ -60,8 +81,12 @@ export class BattleScene extends Phaser.Scene {
   private enemyStates: EnemySceneState[] = [];
   private sceneReady = false;
   private attackRunning = false;
+  private attackStartedAt: number | null = null;
   private parryReadyAt = 0;
   private dodgeReadyAt = 0;
+  private resolvedHitIndexes = new Set<number>();
+  private parryWindowBonusMs = 0;
+  private dodgeWindowBonusMs = 0;
 
   constructor() {
     super("BattleScene");
@@ -88,7 +113,6 @@ export class BattleScene extends Phaser.Scene {
 
   create() {
     const { width, height } = this.scale;
-
     this.cameras.main.setBackgroundColor("#020914");
     this.setTextureSmoothing();
 
@@ -106,9 +130,11 @@ export class BattleScene extends Phaser.Scene {
     this.player = this.createPlayerActor(this.playerHome.x, this.playerHome.y);
     this.sceneReady = true;
     this.syncEnemyFormation();
+    this.eventsBridge.onSceneReady(this);
 
-    this.input.keyboard?.on("keydown-A", () => this.parryPlayer());
-    this.input.keyboard?.on("keydown-S", () => this.dodgePlayer());
+    this.input.keyboard?.on("keydown-A", () => this.resolveReactionInput("parry"));
+    this.input.keyboard?.on("keydown-S", () => this.resolveReactionInput("dodge"));
+    this.input.keyboard?.on("keydown-D", () => this.resolveReactionInput("miss"));
     this.publishActorBounds();
     this.scale.on("resize", this.handleResize, this);
   }
@@ -119,6 +145,9 @@ export class BattleScene extends Phaser.Scene {
 
   setEnemies(enemies: EnemySceneState[], activeEnemyId: string) {
     this.configureEnemyFormation(enemies, activeEnemyId);
+    if (this.attackRunning) {
+      return;
+    }
     this.syncEnemyFormation();
   }
 
@@ -147,7 +176,6 @@ export class BattleScene extends Phaser.Scene {
     if (this.phase === phase && phase !== "enemyAttack") {
       return;
     }
-
     this.phase = phase;
 
     if (!this.sceneReady) {
@@ -167,6 +195,11 @@ export class BattleScene extends Phaser.Scene {
   resetDefenseCooldowns() {
     this.parryReadyAt = 0;
     this.dodgeReadyAt = 0;
+  }
+
+  setReactionTimingModifiers(modifiers: { dodgeWindowBonusMs: number; parryWindowBonusMs: number }) {
+    this.dodgeWindowBonusMs = modifiers.dodgeWindowBonusMs;
+    this.parryWindowBonusMs = modifiers.parryWindowBonusMs;
   }
 
   flashEnemy(enemyId?: string) {
@@ -563,7 +596,11 @@ export class BattleScene extends Phaser.Scene {
 
   private runAttack(pattern: AttackPattern) {
     this.attackRunning = true;
-    this.clearAttackTimers();
+    this.attackStartedAt = performance.now();
+    this.resolvedHitIndexes = new Set();
+    this.clearAttackResolutionTimers();
+    this.clearAttackVisualTimers();
+    this.eventsBridge.onAttackStarted(this.attackStartedAt);
     const attacker = this.getEnemyActorTarget();
     this.enemy = attacker.actor;
     this.enemyHome = attacker.home;
@@ -577,25 +614,121 @@ export class BattleScene extends Phaser.Scene {
     }).setOrigin(0.5).setDepth(6).setAlpha(0.95);
     if (pattern.id === "quick-slash") {
       this.runQuickSlashVisual(pattern, attacker);
+      this.queueAttackResolution(pattern);
       return;
     }
 
     if (pattern.id === "heavy-overhead") {
       this.runHeavyOverheadVisual(pattern, attacker);
+      this.queueAttackResolution(pattern);
       return;
     }
 
     if (pattern.id === "three-hit-combo") {
       this.runThreeHitComboVisual(pattern, attacker);
+      this.queueAttackResolution(pattern);
       return;
     }
 
     if (pattern.id === "shield-breaker") {
       this.runShieldBreakerVisual(pattern, attacker);
+      this.queueAttackResolution(pattern);
+      return;
+    }
+    this.runOrbitalLaserVisual(pattern, attacker);
+    this.queueAttackResolution(pattern);
+  }
+
+  private queueAttackResolution(pattern: AttackPattern) {
+    for (const [index, hit] of pattern.hits.entries()) {
+      this.attackResolutionTimers.push(this.time.delayedCall(hit.atMs, () => {
+        this.eventsBridge.onAttackImpact({ hit, hitIndex: index });
+      }));
+      this.attackResolutionTimers.push(this.time.delayedCall(hit.atMs + pattern.dodgeWindowMs, () => {
+        if (this.resolvedHitIndexes.has(index)) {
+          return;
+        }
+        this.resolveHit(index, hit, "HIT_TAKEN", "Hit");
+      }));
+    }
+
+    this.attackResolutionTimers.push(this.time.delayedCall(getAttackDuration(pattern) + PLAYER_TURN_AFTER_ENEMY_PAUSE_MS, () => {
+      this.eventsBridge.onAttackComplete();
+    }));
+  }
+
+  private resolveReactionInput(input: ReactionInput) {
+    if (this.phase !== "enemyAttack" || !this.attackRunning || this.attackStartedAt === null) {
       return;
     }
 
-    this.runOrbitalLaserVisual(pattern, attacker);
+    const pattern = attackPatterns[this.attackId];
+    const elapsed = performance.now() - this.attackStartedAt;
+    const nextHit = pattern.hits
+      .map((hit, index) => ({ hit, index, offset: Math.abs(elapsed - hit.atMs) }))
+      .filter(({ index }) => !this.resolvedHitIndexes.has(index))
+      .sort((a, b) => a.offset - b.offset)[0];
+
+    if (!nextHit) {
+      return;
+    }
+
+    const markerPercent = this.getAttackProgressPercent(pattern);
+
+    if (pattern.defense === "shield") {
+      this.eventsBridge.onTimingInput({ percent: markerPercent, tone: "miss" });
+      this.showReactionLabel("Shield Only", "bad");
+      return;
+    }
+
+    if (input === "miss") {
+      this.eventsBridge.onTimingInput({ percent: markerPercent, tone: "miss" });
+      this.resolveHit(nextHit.index, nextHit.hit, "REACTION_FAILED", "Miss");
+      return;
+    }
+
+    if (input === "dodge") {
+      const result =
+        nextHit.offset <= pattern.dodgeWindowMs + this.dodgeWindowBonusMs ? "DODGE_SUCCESS" : "REACTION_FAILED";
+      this.eventsBridge.onTimingInput({
+        percent: markerPercent,
+        tone: result === "DODGE_SUCCESS" ? "dodge" : "miss",
+      });
+      this.resolveHit(nextHit.index, nextHit.hit, result, result === "DODGE_SUCCESS" ? "Dodge" : "Early");
+      return;
+    }
+
+    if (nextHit.offset <= pattern.perfectParryWindowMs + this.parryWindowBonusMs / 2) {
+      this.eventsBridge.onTimingInput({ percent: markerPercent, tone: "perfect" });
+      this.resolveHit(nextHit.index, nextHit.hit, "PARRY_PERFECT", "Perfect");
+      return;
+    }
+
+    if (nextHit.offset <= pattern.normalParryWindowMs + this.parryWindowBonusMs) {
+      this.eventsBridge.onTimingInput({ percent: markerPercent, tone: "parry" });
+      this.resolveHit(nextHit.index, nextHit.hit, "PARRY_NORMAL", "Parry");
+      return;
+    }
+
+    this.eventsBridge.onTimingInput({ percent: markerPercent, tone: "miss" });
+    this.resolveHit(nextHit.index, nextHit.hit, "REACTION_FAILED", elapsed < nextHit.hit.atMs ? "Early" : "Late");
+  }
+
+  private resolveHit(hitIndex: number, hit: AttackHit, result: ReactionResult, label: string) {
+    if (this.resolvedHitIndexes.has(hitIndex)) {
+      return;
+    }
+
+    this.resolvedHitIndexes.add(hitIndex);
+    this.eventsBridge.onReactionResolved({ hit, hitIndex, label, result });
+  }
+
+  private getAttackProgressPercent(pattern: AttackPattern) {
+    if (this.attackStartedAt === null) {
+      return 0;
+    }
+
+    return clamp(((performance.now() - this.attackStartedAt) / getAttackDuration(pattern)) * 100, 0, 100);
   }
 
   private runQuickSlashVisual(pattern: AttackPattern, attacker: EnemyActorTarget) {
@@ -638,7 +771,7 @@ export class BattleScene extends Phaser.Scene {
     this.resetEnemyPose(attacker);
     const angles = [52, -56, 70];
     for (const [index, hit] of pattern.hits.entries()) {
-      this.attackTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 220), () => {
+      this.attackVisualTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 220), () => {
         this.tweenWeapon({ angle: -angles[index], duration: 180, ease: "Sine.easeOut" });
         this.tweens.add({
           targets: attacker.actor,
@@ -657,7 +790,7 @@ export class BattleScene extends Phaser.Scene {
     this.tweenWeapon({ angle: -18, scaleY: 0.92, duration: 260, ease: "Sine.easeOut" });
 
     for (const [index, hit] of pattern.hits.entries()) {
-      this.attackTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 280), () => {
+      this.attackVisualTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 280), () => {
         const turn = (index / pattern.hits.length) * Math.PI * 2 - Math.PI / 2;
         this.pulseActor(attacker.actor, 1.035, 120);
         this.showImpactBurst(
@@ -667,7 +800,7 @@ export class BattleScene extends Phaser.Scene {
         );
       }));
 
-      this.attackTimers.push(this.time.delayedCall(hit.atMs, () => {
+      this.attackVisualTimers.push(this.time.delayedCall(hit.atMs, () => {
         this.showImpactBurst(this.player.x + 20, this.player.y - 58, 0xfff3bd);
         this.cameras.main.shake(index === pattern.hits.length - 1 ? 130 : 72, 0.0035);
       }));
@@ -695,12 +828,12 @@ export class BattleScene extends Phaser.Scene {
       ease: "Sine.easeInOut",
     });
 
-    this.attackTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 360), () => {
+    this.attackVisualTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 360), () => {
       this.showImpactBurst(attacker.home.x - 16, attacker.home.y - 112, 0x8fa0de);
       this.pulseActor(attacker.actor, 1.08, 160);
     }));
 
-    this.attackTimers.push(this.time.delayedCall(hit.atMs, () => {
+    this.attackVisualTimers.push(this.time.delayedCall(hit.atMs, () => {
       this.tweenWeapon({ angle: 92, scaleY: 1, duration: 160, ease: "Quad.easeIn" });
       this.tweens.add({
         targets: attacker.actor,
@@ -717,11 +850,11 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private queueHitVisual(attacker: EnemyActorTarget, atMs: number, angle: number, shakeMs: number) {
-    this.attackTimers.push(this.time.delayedCall(Math.max(0, atMs - 140), () => {
+    this.attackVisualTimers.push(this.time.delayedCall(Math.max(0, atMs - 140), () => {
       this.pulseActor(attacker.actor, 1.04, 95);
     }));
 
-    this.attackTimers.push(this.time.delayedCall(atMs, () => {
+    this.attackVisualTimers.push(this.time.delayedCall(atMs, () => {
       this.tweenWeapon({ angle, scaleY: 1, duration: 150, ease: "Quad.easeIn" });
       this.tweens.add({
         targets: attacker.actor,
@@ -741,27 +874,35 @@ export class BattleScene extends Phaser.Scene {
     if (!this.attackRunning) {
       return;
     }
-
     this.attackRunning = false;
-    this.clearAttackTimers();
+    this.attackStartedAt = null;
+    this.resolvedHitIndexes = new Set();
+    this.clearAttackResolutionTimers();
+    this.clearAttackVisualTimers();
     this.resetWeapon();
     this.resetEnemyPose();
     this.attackCue?.destroy();
     this.attackCue = undefined;
   }
 
-  private clearAttackTimers() {
-    for (const timer of this.attackTimers) {
+  private clearAttackResolutionTimers() {
+    for (const timer of this.attackResolutionTimers) {
       timer.remove(false);
     }
-    this.attackTimers = [];
+    this.attackResolutionTimers = [];
+  }
+
+  private clearAttackVisualTimers() {
+    for (const timer of this.attackVisualTimers) {
+      timer.remove(false);
+    }
+    this.attackVisualTimers = [];
   }
 
   private resetWeapon() {
     if (!this.weapon) {
       return;
     }
-
     this.tweens.killTweensOf(this.weapon);
     this.tweens.add({
       targets: this.weapon,
@@ -776,7 +917,6 @@ export class BattleScene extends Phaser.Scene {
     if (!this.weapon) {
       return;
     }
-
     this.tweens.add({
       targets: this.weapon,
       ...config,
@@ -795,8 +935,6 @@ export class BattleScene extends Phaser.Scene {
     if (this.phase !== "enemyAttack" || !this.attackRunning) {
       return;
     }
-
-    this.resetWeapon();
     this.attackCue?.setText(label);
     this.attackCue?.setColor(tone === "good" ? "#9fe2b1" : tone === "bad" ? "#f07a6a" : "#f7dca2");
     this.attackCue?.setScale(1.18);

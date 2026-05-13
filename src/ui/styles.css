@@ -369,15 +369,47 @@ button {
   display: block;
 }
 
-.music-control {
+.top-right-controls {
   position: fixed;
   z-index: 25;
   top: 14px;
   right: 14px;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: calc(100vw - 28px);
+}
+
+.help-button {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  border: 1px solid rgba(246, 236, 216, 0.16);
+  border-radius: 8px;
+  padding: 0;
+  background: rgba(15, 15, 16, 0.76);
+  color: #f6ecd8;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(10px);
+  font-size: 22px;
+  font-weight: 900;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.help-button:hover {
+  border-color: rgba(245, 207, 114, 0.62);
+  background: rgba(245, 207, 114, 0.16);
+  color: #f5cf72;
+}
+
+.music-control {
+  flex: 1 1 auto;
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  max-width: min(420px, calc(100vw - 28px));
+  max-width: min(420px, calc(100vw - 78px));
   min-height: 42px;
   padding: 4px;
   border: 1px solid rgba(246, 236, 216, 0.16);
@@ -386,6 +418,81 @@ button {
   color: rgba(246, 236, 216, 0.78);
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.28);
   backdrop-filter: blur(10px);
+}
+
+.help-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgba(0, 0, 0, 0.52);
+}
+
+.help-modal {
+  width: min(360px, 100%);
+  border: 1px solid rgba(246, 236, 216, 0.2);
+  border-radius: 8px;
+  padding: 18px;
+  background: rgba(15, 15, 16, 0.94);
+  color: #f6ecd8;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(14px);
+}
+
+.help-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+.help-modal h2 {
+  margin: 0;
+  color: #f5cf72;
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.help-modal-close {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(246, 236, 216, 0.18);
+  border-radius: 8px;
+  padding: 0;
+  background: rgba(246, 236, 216, 0.1);
+  color: #f6ecd8;
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.help-modal-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.help-modal-actions p,
+.help-modal-actions a {
+  margin: 0;
+  border: 1px solid rgba(246, 236, 216, 0.14);
+  border-radius: 8px;
+  padding: 12px 14px;
+  background: rgba(246, 236, 216, 0.08);
+  color: #f6ecd8;
+  font-size: 17px;
+  font-weight: 800;
+  text-decoration: none;
+}
+
+.help-modal-actions a:hover {
+  border-color: rgba(245, 207, 114, 0.62);
+  background: rgba(245, 207, 114, 0.16);
+  color: #f5cf72;
 }
 
 .music-control.is-expanded {
@@ -510,6 +617,24 @@ button {
   animation: turn-banner-text 1300ms ease both;
 }
 
+.enemy-turn-input-hint {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid rgba(246, 236, 216, 0.22);
+  border-radius: 8px;
+  padding: 10px 14px;
+  background: rgba(15, 15, 16, 0.68);
+  color: rgba(246, 236, 216, 0.9);
+  font-size: 14px;
+  font-weight: 850;
+  letter-spacing: 0;
+  line-height: 1;
+  pointer-events: none;
+  text-align: center;
+  text-transform: uppercase;
+  backdrop-filter: blur(6px);
+}
+
 .targeting-overlay {
   position: fixed;
   inset: 0;
@@ -619,6 +744,52 @@ button {
 .enemy-battlefield-hud.is-active {
   border-color: rgba(168, 184, 255, 0.56);
   box-shadow: 0 0 12px rgba(168, 184, 255, 0.18);
+}
+
+.enemy-battlefield-intent {
+  position: fixed;
+  z-index: 8;
+  display: grid;
+  min-width: 92px;
+  max-width: 168px;
+  gap: 3px;
+  border: 1px solid rgba(245, 207, 114, 0.58);
+  border-radius: 6px;
+  padding: 6px 9px;
+  background: rgba(11, 13, 18, 0.92);
+  color: #fff3bd;
+  line-height: 1;
+  text-align: center;
+  pointer-events: none;
+  transform: translateX(-50%);
+  box-shadow: 0 0 14px rgba(245, 207, 114, 0.16);
+}
+
+.enemy-battlefield-intent.is-active {
+  border-color: rgba(245, 207, 114, 0.82);
+  box-shadow: 0 0 18px rgba(245, 207, 114, 0.24);
+}
+
+.enemy-battlefield-intent span {
+  color: #f6ecd8;
+  font-size: 10px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.enemy-battlefield-intent strong {
+  color: #f07a6a;
+  font-size: 20px;
+  font-weight: 950;
+}
+
+.enemy-battlefield-intent small {
+  overflow: hidden;
+  color: #a8b8ff;
+  font-size: 10px;
+  font-weight: 850;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .enemy-battlefield-hud-track {

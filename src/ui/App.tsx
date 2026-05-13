@@ -90,7 +90,6 @@ type CardKeywordDefinition = {
 };
 
 const TURN_BANNER_DURATION_MS = 1300;
-const PLAYER_TURN_AFTER_ENEMY_PAUSE_MS = 750;
 const backgroundOptions: BackgroundOption[] = [
   {
     id: "castle",
@@ -484,6 +483,7 @@ export function App() {
   const [debugCollapsed, setDebugCollapsed] = useState(true);
   const [musicPlayback, setMusicPlayback] = useState<MusicPlaybackState>("off");
   const [musicMenuExpanded, setMusicMenuExpanded] = useState(false);
+  const [helpModalOpen, setHelpModalOpen] = useState(false);
   const battlefieldRef = useRef<PhaserBattlefieldHandle | null>(null);
   const soundtrackRef = useRef<HTMLAudioElement | null>(null);
   const resolvedHitIdsRef = useRef<Set<number>>(new Set());
@@ -512,6 +512,7 @@ export function App() {
   const turnBannerLabel = state.phase === "playerTurn" ? "Player Turn" : activeEnemy.name;
   const hoveredEnemyIsVulnerable = isAimingEnemyCard && hoveredEnemy !== null && hasStatus(hoveredEnemy.statuses, "vulnerable");
   const currentAttackPattern = attackPatterns[activeEnemy.attackId];
+  const reactionTimingModifiers = useMemo(() => getReactionTimingModifiers(state), [state]);
   const selectedBackground =
     backgroundOptions.find((background) => background.id === selectedBackgroundId) ?? backgroundOptions[0];
 
@@ -781,10 +782,6 @@ export function App() {
     }
   }, []);
 
-  const completeEnemyAttackSoon = useCallback(() => {
-    window.setTimeout(() => dispatch({ type: "ENEMY_ATTACK_COMPLETE" }), PLAYER_TURN_AFTER_ENEMY_PAUSE_MS);
-  }, []);
-
   const handleReactionResult = useCallback((hitIndex: number, hit: AttackHit, result: ReactionResult, label: string) => {
     if (resolvedHitIdsRef.current.has(hitIndex)) {
       return;
@@ -830,11 +827,13 @@ export function App() {
     if (result === "PARRY_PERFECT") {
       playSfx("status.perfection", { volume: 0.52, cooldownMs: 80 });
       playSfx("combat.metalBlock", { volume: 0.48, playbackRateVariance: 0.05 });
+      battlefieldRef.current?.parryPlayer();
       battlefieldRef.current?.showFloatingText("player", "Perfect", "good");
       showActorFeedback("player", "Perfect", "perfect");
     }
     if (result === "PARRY_NORMAL") {
       playSfx("combat.metalBlock", { volume: 0.48, playbackRateVariance: 0.05 });
+      battlefieldRef.current?.parryPlayer();
       battlefieldRef.current?.showReactionLabel("Parry", "good");
     }
     if (result === "DODGE_SUCCESS") {
@@ -848,76 +847,38 @@ export function App() {
       showActorFeedback("enemy", `-${riposteDamage}`, "damage");
     }
     dispatch({ type: "REACTION_RESULT", result, damage: hit.damage, hitLabel: hit.label });
-
-    if (resolvedHitIdsRef.current.size >= currentAttackPattern.hits.length) {
-      completeEnemyAttackSoon();
-    }
   }, [
-    completeEnemyAttackSoon,
     activeEnemy.statuses,
-    currentAttackPattern.hits.length,
     state.player.mechanic,
     state.player.statuses,
   ]);
 
-  const resolveReactionInput = useCallback(
-    (input: "parry" | "dodge" | "miss") => {
-      if (attackStartedAt === null) {
-        return;
-      }
+  const handlePhaserAttackStarted = useCallback((startedAt: number) => {
+    resolvedHitIdsRef.current = new Set();
+    setAttackStartedAt(startedAt);
+  }, []);
 
-      const elapsed = performance.now() - attackStartedAt;
-      const timingModifiers = getReactionTimingModifiers(state);
-      const nextHit = currentAttackPattern.hits
-        .map((hit, index) => ({ hit, index, offset: Math.abs(elapsed - hit.atMs) }))
-        .filter(({ index }) => !resolvedHitIdsRef.current.has(index))
-        .sort((a, b) => a.offset - b.offset)[0];
+  const handlePhaserAttackImpact = useCallback(() => {
+    playSfx("combat.laserFire", { volume: 0.5, playbackRateVariance: 0.08, cooldownMs: 40 });
+  }, []);
 
-      if (!nextHit) {
-        return;
-      }
-
-      const markerPercent = Math.min(100, Math.max(0, (elapsed / getAttackDuration(currentAttackPattern)) * 100));
-
-      if (currentAttackPattern.defense === "shield") {
-        showTimingInputMarker(markerPercent, "miss");
-        battlefieldRef.current?.showReactionLabel("Shield Only", "bad");
-        return;
-      }
-
-      if (input === "miss") {
-        showTimingInputMarker(markerPercent, "miss");
-        handleReactionResult(nextHit.index, nextHit.hit, "REACTION_FAILED", "Miss");
-        return;
-      }
-
-      if (input === "dodge") {
-        const result =
-          nextHit.offset <= currentAttackPattern.dodgeWindowMs + timingModifiers.dodgeWindowBonusMs
-            ? "DODGE_SUCCESS"
-            : "REACTION_FAILED";
-        showTimingInputMarker(markerPercent, result === "DODGE_SUCCESS" ? "dodge" : "miss");
-        handleReactionResult(nextHit.index, nextHit.hit, result, result === "DODGE_SUCCESS" ? "Dodge" : "Early");
-        return;
-      }
-
-      if (nextHit.offset <= currentAttackPattern.perfectParryWindowMs + timingModifiers.parryWindowBonusMs / 2) {
-        showTimingInputMarker(markerPercent, "perfect");
-        handleReactionResult(nextHit.index, nextHit.hit, "PARRY_PERFECT", "Perfect");
-        return;
-      }
-
-      if (nextHit.offset <= currentAttackPattern.normalParryWindowMs + timingModifiers.parryWindowBonusMs) {
-        showTimingInputMarker(markerPercent, "parry");
-        handleReactionResult(nextHit.index, nextHit.hit, "PARRY_NORMAL", "Parry");
-        return;
-      }
-
-      showTimingInputMarker(markerPercent, "miss");
-      handleReactionResult(nextHit.index, nextHit.hit, "REACTION_FAILED", elapsed < nextHit.hit.atMs ? "Early" : "Late");
+  const handlePhaserReactionResolved = useCallback(
+    (event: { hit: AttackHit; hitIndex: number; label: string; result: ReactionResult }) => {
+      handleReactionResult(event.hitIndex, event.hit, event.result, event.label);
     },
-    [attackStartedAt, currentAttackPattern, handleReactionResult, showTimingInputMarker, state],
+    [handleReactionResult],
   );
+
+  const handlePhaserTimingInput = useCallback(
+    (event: { percent: number; tone: TimingInputMarker["tone"] }) => {
+      showTimingInputMarker(event.percent, event.tone);
+    },
+    [showTimingInputMarker],
+  );
+
+  const handlePhaserAttackComplete = useCallback(() => {
+    dispatch({ type: "ENEMY_ATTACK_COMPLETE" });
+  }, []);
 
   useEffect(() => {
     if (state.phase !== "enemyTurn") {
@@ -935,74 +896,8 @@ export function App() {
     if (state.phase !== "enemyAttack") {
       resolvedHitIdsRef.current = new Set();
       setAttackStartedAt(null);
-      return;
     }
-
-    resolvedHitIdsRef.current = new Set();
-    const startedAt = performance.now();
-    setAttackStartedAt(startedAt);
-
-    const hitTimers = currentAttackPattern.hits.map((hit, index) =>
-      window.setTimeout(() => {
-        if (resolvedHitIdsRef.current.has(index)) {
-          return;
-        }
-
-        resolvedHitIdsRef.current.add(index);
-        battlefieldRef.current?.showReactionLabel("Hit", "bad");
-        battlefieldRef.current?.flashPlayer();
-        playSfx("combat.laserImpact", { volume: 0.66, playbackRateVariance: 0.065 });
-        const stanceDamageReceived =
-          state.player.mechanic.type === "stance" ? stanceRules[state.player.mechanic.stance].damageReceived : 1;
-        const baseDamage = Math.round(hit.damage * stanceDamageReceived);
-        const hpDamage = Math.max(0, baseDamage - state.player.block);
-        battlefieldRef.current?.showFloatingText("player", hpDamage > 0 ? `-${hpDamage}` : "Blocked", hpDamage > 0 ? "bad" : "block");
-        showActorFeedback("player", hpDamage > 0 ? `-${hpDamage}` : "Blocked", hpDamage > 0 ? "damage" : "block");
-        dispatch({ type: "REACTION_RESULT", result: "HIT_TAKEN", damage: hit.damage, hitLabel: hit.label });
-      }, hit.atMs + currentAttackPattern.dodgeWindowMs),
-    );
-    const beamTimers = currentAttackPattern.hits.map((hit) =>
-      window.setTimeout(() => {
-        playSfx("combat.laserFire", { volume: 0.5, playbackRateVariance: 0.08, cooldownMs: 40 });
-      }, hit.atMs),
-    );
-
-    const completionTimer = window.setTimeout(() => {
-      dispatch({ type: "ENEMY_ATTACK_COMPLETE" });
-    }, getAttackDuration(currentAttackPattern) + PLAYER_TURN_AFTER_ENEMY_PAUSE_MS);
-
-    return () => {
-      for (const timer of hitTimers) {
-        window.clearTimeout(timer);
-      }
-      for (const timer of beamTimers) {
-        window.clearTimeout(timer);
-      }
-      window.clearTimeout(completionTimer);
-    };
-  }, [currentAttackPattern, showActorFeedback, state.phase]);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const key = event.key.toLowerCase();
-      if (state.phase !== "enemyAttack") {
-        return;
-      }
-
-      if (key === "a") {
-        resolveReactionInput("parry");
-      }
-      if (key === "s") {
-        resolveReactionInput("dodge");
-      }
-      if (key === "d") {
-        resolveReactionInput("miss");
-      }
-    };
-
-    document.addEventListener("keydown", handleKeyDown, { capture: true });
-    return () => document.removeEventListener("keydown", handleKeyDown, { capture: true });
-  }, [resolveReactionInput, state.phase]);
+  }, [state.phase]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1055,12 +950,14 @@ export function App() {
   if (route === "root") {
     return (
       <main className="app-shell">
-        <MusicToggle
-          expanded={musicMenuExpanded}
-          playback={musicPlayback}
-          onToggle={toggleMusic}
-          onToggleExpanded={() => setMusicMenuExpanded((expanded) => !expanded)}
+        <TopRightControls
+          musicExpanded={musicMenuExpanded}
+          musicPlayback={musicPlayback}
+          onHelp={() => setHelpModalOpen(true)}
+          onMusicToggle={toggleMusic}
+          onMusicToggleExpanded={() => setMusicMenuExpanded((expanded) => !expanded)}
         />
+        {helpModalOpen && <HowToPlayModal onClose={() => setHelpModalOpen(false)} />}
         <CharacterSelectScreen
           selectedCharacterId={selectedCharacterId}
           selectedEnemyIds={selectedEnemyIds}
@@ -1077,12 +974,14 @@ export function App() {
   return (
     <main className="app-shell">
       <section className="combat-root" aria-label="Combat prototype">
-        <MusicToggle
-          expanded={musicMenuExpanded}
-          playback={musicPlayback}
-          onToggle={toggleMusic}
-          onToggleExpanded={() => setMusicMenuExpanded((expanded) => !expanded)}
+        <TopRightControls
+          musicExpanded={musicMenuExpanded}
+          musicPlayback={musicPlayback}
+          onHelp={() => setHelpModalOpen(true)}
+          onMusicToggle={toggleMusic}
+          onMusicToggleExpanded={() => setMusicMenuExpanded((expanded) => !expanded)}
         />
+        {helpModalOpen && <HowToPlayModal onClose={() => setHelpModalOpen(false)} />}
         <PhaserBattlefield
           ref={battlefieldRef}
           phase={state.phase}
@@ -1091,9 +990,15 @@ export function App() {
           playerSpritePath={`${import.meta.env.BASE_URL}${characterDefinitions[state.player.characterId].image}`}
           enemies={state.enemies}
           activeEnemyId={state.activeEnemyId}
+          reactionTimingModifiers={reactionTimingModifiers}
+          onAttackComplete={handlePhaserAttackComplete}
+          onAttackImpact={handlePhaserAttackImpact}
+          onAttackStarted={handlePhaserAttackStarted}
           onEnemyBoundsChange={setEnemyRect}
           onEnemyBoundsListChange={setEnemyRects}
           onPlayerBoundsChange={setPlayerRect}
+          onReactionResolved={handlePhaserReactionResolved}
+          onTimingInput={handlePhaserTimingInput}
         />
 
         {(state.phase === "playerTurn" || state.phase === "enemyTurn") && (
@@ -1221,6 +1126,7 @@ export function App() {
             onToggleCollapsed={() => setDebugCollapsed((value) => !value)}
             onToggleTiming={() => setShowTimingAssist((value) => !value)}
           />
+          <EnemyTurnInputHint />
         </div>
 
         <div className="bottom-ui">
@@ -1298,6 +1204,62 @@ export function App() {
         )}
       </section>
     </main>
+  );
+}
+
+function TopRightControls({
+  musicExpanded,
+  musicPlayback,
+  onHelp,
+  onMusicToggle,
+  onMusicToggleExpanded,
+}: {
+  musicExpanded: boolean;
+  musicPlayback: MusicPlaybackState;
+  onHelp: () => void;
+  onMusicToggle: () => void;
+  onMusicToggleExpanded: () => void;
+}) {
+  return (
+    <div className="top-right-controls">
+      <button className="help-button" type="button" aria-label="How to Play" title="How to Play" onClick={onHelp}>
+        ?
+      </button>
+      <MusicToggle
+        expanded={musicExpanded}
+        playback={musicPlayback}
+        onToggle={onMusicToggle}
+        onToggleExpanded={onMusicToggleExpanded}
+      />
+    </div>
+  );
+}
+
+function HowToPlayModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="help-modal-backdrop" role="presentation" onClick={onClose}>
+      <div
+        className="help-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="how-to-play-title"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="help-modal-header">
+          <h2 id="how-to-play-title">How to Play</h2>
+          <button className="help-modal-close" type="button" aria-label="Close How to Play" onClick={onClose}>
+            x
+          </button>
+        </div>
+        <div className="help-modal-actions">
+          <p>A to parry</p>
+          <p>S to dodge</p>
+          <a href="https://docs.google.com/forms/d/1rEPcpr9AeCaSRvfX8_OUgkSsnDUPfmIzAv_VQf1gzRg/edit" target="_blank" rel="noreferrer">
+            Feedback
+          </a>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1601,26 +1563,60 @@ function EnemyBattlefieldHud({
 
   const ratio = Math.max(0, Math.min(1, enemy.hp / enemy.maxHp));
   const activeStatuses = getActiveStatusEntries(enemy.statuses);
+  const intent = getEnemyIntentPresentation(enemy);
 
   return (
-    <div
-      className={`enemy-battlefield-hud ${active ? "is-active" : ""}`}
-      style={{
-        left: bounds.left + bounds.width / 2,
-        top: bounds.top + bounds.height - 78,
-      }}
-      aria-label={`${enemy.name} HP ${enemy.hp} of ${enemy.maxHp}`}
-    >
-      <span className="enemy-battlefield-hud-name">{enemy.name}</span>
-      <div className="enemy-battlefield-hud-track">
-        <span className="enemy-battlefield-hud-value">{enemy.hp}/{enemy.maxHp}</span>
-        <div className="enemy-battlefield-hud-fill" style={{ width: `${ratio * 100}%` }} />
+    <>
+      <div
+        className={`enemy-battlefield-intent ${active ? "is-active" : ""}`}
+        style={{
+          left: bounds.left + bounds.width / 2,
+          top: bounds.top - 72,
+        }}
+        aria-label={`${enemy.name} intent ${intent.type} ${intent.damage}`}
+      >
+        <span>{intent.type}</span>
+        <strong>{intent.damage}</strong>
+        <small>{intent.name}</small>
       </div>
-      {activeStatuses.length > 0 && (
-        <StatusChips className="enemy-battlefield-status-row" label={`${enemy.name} statuses`} statuses={activeStatuses} />
-      )}
-    </div>
+
+      <div
+        className={`enemy-battlefield-hud ${active ? "is-active" : ""}`}
+        style={{
+          left: bounds.left + bounds.width / 2,
+          top: bounds.top + bounds.height - 78,
+        }}
+        aria-label={`${enemy.name} HP ${enemy.hp} of ${enemy.maxHp}`}
+      >
+        <span className="enemy-battlefield-hud-name">{enemy.name}</span>
+        <div className="enemy-battlefield-hud-track">
+          <span className="enemy-battlefield-hud-value">{enemy.hp}/{enemy.maxHp}</span>
+          <div className="enemy-battlefield-hud-fill" style={{ width: `${ratio * 100}%` }} />
+        </div>
+        {activeStatuses.length > 0 && (
+          <StatusChips className="enemy-battlefield-status-row" label={`${enemy.name} statuses`} statuses={activeStatuses} />
+        )}
+      </div>
+    </>
   );
+}
+
+function getEnemyIntentPresentation(enemy: EnemyCombatant) {
+  const pattern = attackPatterns[enemy.attackId];
+  const damageParts = pattern.hits.map((hit) => hit.damage);
+  const allHitsMatch = damageParts.every((damage) => damage === damageParts[0]);
+  const damage =
+    damageParts.length === 1
+      ? String(damageParts[0])
+      : allHitsMatch
+        ? `${damageParts[0]} x ${damageParts.length}`
+        : damageParts.join(" + ");
+
+  return {
+    damage,
+    name: pattern.name,
+    type: pattern.defense === "shield" ? "Shield Break" : damageParts.length > 1 ? "Multi Attack" : "Attack",
+  };
 }
 
 function RelicHud({ relics }: { relics: PlayerRelic[] }) {
@@ -1666,6 +1662,14 @@ function TurnBanner({ label }: { label: string }) {
   return (
     <div className="turn-banner" aria-live="polite" aria-label={label}>
       <span>{label}</span>
+    </div>
+  );
+}
+
+function EnemyTurnInputHint() {
+  return (
+    <div className="enemy-turn-input-hint" aria-live="polite">
+      A to parry, S to dodge
     </div>
   );
 }
