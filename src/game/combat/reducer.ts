@@ -1,6 +1,7 @@
 import { attackPatterns, getNextAttackId } from "./attackPatterns";
 import { cardDefinitions, starterDeck } from "./cards";
-import { addStatus, clearUntilTurnEndStatuses, hasStatus, removeStatus } from "./statuses";
+import { applyCombatEffects } from "./effects";
+import { clearUntilTurnEndStatuses, hasStatus, removeStatus } from "./statuses";
 import type { CombatAction, CombatCard, CombatState, EnemyPhaseSummary, ReactionResult } from "./types";
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
@@ -280,83 +281,7 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
         },
       };
 
-      if (definition.id === "strike") {
-        const nextHp = clamp(state.enemy.hp - 6, 0, state.enemy.maxHp);
-        nextState = {
-          ...nextState,
-          phase: nextHp <= 0 ? "won" : nextState.phase,
-          enemy: {
-            ...state.enemy,
-            hp: nextHp,
-          },
-          log: appendLog(nextState, "Strike deals 6 damage."),
-        };
-      }
-
-      if (definition.id === "guard") {
-        nextState = {
-          ...nextState,
-          player: {
-            ...nextState.player,
-            block: nextState.player.block + 5,
-            statuses: addStatus(nextState.player.statuses, "guard"),
-          },
-          log: appendLog(nextState, "Guard readies a safer defense."),
-        };
-      }
-
-      if (definition.id === "focus") {
-        nextState = {
-          ...nextState,
-          player: {
-            ...nextState.player,
-            statuses: addStatus(nextState.player.statuses, "focus"),
-          },
-          log: appendLog(nextState, "Focus widens the next parry window."),
-        };
-      }
-
-      if (definition.id === "riposte-prep") {
-        nextState = {
-          ...nextState,
-          player: {
-            ...nextState.player,
-            statuses: addStatus(nextState.player.statuses, "riposte-prep"),
-          },
-          log: appendLog(nextState, "Riposte Prep readies a counter."),
-        };
-      }
-
-      if (definition.id === "recovery-step") {
-        nextState = {
-          ...nextState,
-          player: {
-            ...nextState.player,
-            statuses: addStatus(nextState.player.statuses, "recovery-step"),
-          },
-          log: appendLog(nextState, "Recovery Step can catch one mistake."),
-        };
-      }
-
-      if (definition.id === "crescendo") {
-        const damage = 4 + state.player.perfection * 2;
-        const nextHp = clamp(state.enemy.hp - damage, 0, state.enemy.maxHp);
-        nextState = {
-          ...nextState,
-          phase: nextHp <= 0 ? "won" : nextState.phase,
-          enemy: {
-            ...state.enemy,
-            hp: nextHp,
-          },
-          player: {
-            ...nextState.player,
-            perfection: 0,
-          },
-          log: appendLog(nextState, `Crescendo spends Perfection for ${damage} damage.`),
-        };
-      }
-
-      return nextState;
+      return applyCombatEffects(nextState, definition.effects);
     }
 
     case "END_TURN":
