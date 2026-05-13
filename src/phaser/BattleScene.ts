@@ -406,8 +406,6 @@ export class BattleScene extends Phaser.Scene {
       fontSize: "22px",
       fontStyle: "bold",
     }).setOrigin(0.5).setDepth(6).setAlpha(0.95);
-    this.createAttackTell(pattern);
-
     if (pattern.id === "quick-slash") {
       this.runQuickSlashVisual(pattern);
       return;
@@ -481,7 +479,6 @@ export class BattleScene extends Phaser.Scene {
     }));
 
     this.attackTimers.push(this.time.delayedCall(atMs, () => {
-      this.attackTell?.setAlpha(0.72);
       this.tweenWeapon({ angle, scaleY: 1, duration: 150, ease: "Quad.easeIn" });
       this.tweens.add({
         targets: this.enemy,
@@ -492,9 +489,8 @@ export class BattleScene extends Phaser.Scene {
         duration: 150,
         ease: "Back.easeOut",
       });
-      this.showAttackBeat(angle);
+      this.showImpactBurst(this.player.x + 20, this.player.y - 58, 0xf7dca2);
       this.cameras.main.shake(shakeMs, 0.004);
-      this.time.delayedCall(90, () => this.attackTell?.setAlpha(0.18));
     }));
   }
 

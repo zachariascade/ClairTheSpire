@@ -647,16 +647,16 @@ function EnemyAttackOverlay({
   const chargeProgress = nextHit ? Math.max(0, Math.min(1, (elapsed - chargeStartMs) / chargeDurationMs)) : 0;
   const msUntilNextHit = nextHit ? nextHit.atMs - elapsed : Number.POSITIVE_INFINITY;
   const chargePhase = activeHit ? "release" : msUntilNextHit <= 420 ? "shake" : "charge";
-  const startX = enemyBounds.left + enemyBounds.width * 0.32;
-  const startY = enemyBounds.top + enemyBounds.height * 0.22;
+  const startX = enemyBounds.left + enemyBounds.width * 0.28;
+  const startY = enemyBounds.top + enemyBounds.height * 0.3;
   const endX = playerBounds.left + playerBounds.width * 0.66;
   const endY = playerBounds.top + playerBounds.height * 0.48;
   const midX = (startX + endX) / 2;
   const midY = (startY + endY) / 2;
   const length = Math.hypot(endX - startX, endY - startY);
   const angle = Math.atan2(endY - startY, endX - startX) * (180 / Math.PI);
-  const impactLeft = playerBounds.left + playerBounds.width * 0.12;
-  const impactTop = playerBounds.top + playerBounds.height * 0.12;
+  const orbSize = 96;
+  const impactSize = Math.min(playerBounds.width, playerBounds.height) * 0.72;
   const beamKey = activeHit ? `${pattern.id}-${activeHitIndex}-${activeHit.atMs}` : "charging";
 
   return (
@@ -664,10 +664,10 @@ function EnemyAttackOverlay({
       <div
         className={`enemy-attack-origin is-${chargePhase}`}
         style={{
-          left: enemyBounds.left,
-          top: enemyBounds.top,
-          width: enemyBounds.width,
-          height: enemyBounds.height,
+          left: startX - orbSize / 2,
+          top: startY - orbSize / 2,
+          width: orbSize,
+          height: orbSize,
           "--charge-progress": chargeProgress,
         } as CSSProperties}
         aria-hidden="true"
@@ -691,10 +691,10 @@ function EnemyAttackOverlay({
             key={`impact-${beamKey}`}
             className="enemy-attack-impact"
             style={{
-              left: impactLeft,
-              top: impactTop,
-              width: playerBounds.width * 0.9,
-              height: playerBounds.height * 0.78,
+              left: endX - impactSize / 2,
+              top: endY - impactSize / 2,
+              width: impactSize,
+              height: impactSize,
             }}
             aria-hidden="true"
           />
