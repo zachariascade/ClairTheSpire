@@ -660,6 +660,7 @@ button {
   display: grid;
   width: min(172px, 100%);
   gap: 8px;
+  pointer-events: auto;
 }
 
 .reaction-controls button {
@@ -677,6 +678,18 @@ button {
   text-align: left;
   text-transform: uppercase;
   backdrop-filter: blur(6px);
+  cursor: pointer;
+}
+
+.reaction-controls button:hover,
+.reaction-controls button:focus-visible {
+  border-color: rgba(245, 207, 114, 0.62);
+  background: rgba(56, 35, 70, 0.86);
+  outline: none;
+}
+
+.reaction-controls button:active {
+  transform: translateY(1px);
 }
 
 .reaction-controls button span {
@@ -693,6 +706,7 @@ button {
 .reaction-controls button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
+  transform: none;
 }
 
 .targeting-overlay {
@@ -3151,12 +3165,14 @@ button {
   .top-hud {
     right: 0;
     left: 0;
+    min-height: 72px;
     width: auto;
-    padding: 14px 18px 10px;
+    gap: 8px;
+    padding: max(10px, env(safe-area-inset-top)) 12px 8px;
   }
 
   .top-hud .meter {
-    flex-basis: min(220px, calc(100vw - 36px));
+    flex-basis: min(188px, calc(100vw - 154px));
   }
 
   .top-hud .top-right-controls {
@@ -3164,14 +3180,15 @@ button {
   }
 
   .relic-strip {
-    top: 88px;
-    right: 18px;
-    left: 18px;
+    top: 78px;
+    right: 12px;
+    left: 12px;
   }
 
   .left-hud {
-    top: 136px;
-    width: min(260px, calc(100vw - 36px));
+    top: 124px;
+    left: 12px;
+    width: min(172px, calc(100vw - 24px));
   }
 
   .left-rail {
@@ -3179,39 +3196,200 @@ button {
   }
 
   .bottom-ui {
-    grid-template-columns: 58px 58px 58px minmax(0, 1fr) 64px 86px;
+    right: max(10px, env(safe-area-inset-right));
+    bottom: max(10px, env(safe-area-inset-bottom));
+    left: max(10px, env(safe-area-inset-left));
+    grid-template-columns: 52px 52px 52px 58px minmax(78px, 1fr);
+    gap: 8px;
   }
 
   .hand {
-    --hand-card-rest-y: 90px;
-    --hand-card-overlap: -58px;
+    --hand-card-rest-y: 84px;
+    --hand-card-overlap: -36px;
 
     grid-column: 1 / -1;
     grid-row: 1;
-    justify-content: center;
+    justify-content: flex-start;
+    margin: 0;
+    overflow-x: auto;
+    overflow-y: visible;
+    overscroll-behavior-x: contain;
+    padding: 12px 4px 0;
+    scrollbar-width: none;
+    scroll-padding-inline: 6px;
+    touch-action: pan-x;
+  }
+
+  .hand::-webkit-scrollbar {
+    display: none;
   }
 
   .energy-readout,
   .poise-readout,
   .pile-readout {
     grid-row: 2;
-    min-height: 58px;
+    min-height: 56px;
+    padding: 7px;
   }
 
   .pile-readout strong,
   .energy-readout strong,
   .poise-readout strong {
-    font-size: 24px;
+    gap: 5px;
+    font-size: 22px;
+  }
+
+  .energy-readout span,
+  .poise-readout span,
+  .pile-readout span {
+    font-size: 9px;
+  }
+
+  .discard-readout {
+    grid-column: 4;
   }
 
   .end-turn-button {
-    grid-column: 6;
+    grid-column: 5;
     grid-row: 2;
-    min-height: 58px;
+    min-height: 56px;
+    padding: 8px;
+    font-size: 12px;
   }
 
   .combat-card {
-    flex-basis: 136px;
-    min-height: 150px;
+    flex-basis: 124px;
+    min-height: 154px;
+    scroll-snap-align: center;
+  }
+
+  .perfection-meter {
+    min-height: 116px;
+    gap: 7px;
+  }
+
+  .perfection-rank-letter {
+    font-size: 68px;
+  }
+
+  .perfection-rank-bonus {
+    max-width: 100%;
+    padding: 5px 7px;
+    font-size: 10px;
+  }
+
+  .relic-hud {
+    gap: 6px;
+  }
+
+  .relic-chip {
+    width: 34px;
+    height: 34px;
+  }
+
+  .relic-icon {
+    font-size: 13px;
+  }
+
+  .reaction-controls {
+    width: min(148px, 100%);
+  }
+
+  .left-hud .reaction-controls {
+    width: min(148px, 100%);
+  }
+}
+
+@media (max-width: 520px) {
+  .bottom-ui {
+    grid-template-columns: 46px 46px 46px 52px minmax(70px, 1fr);
+    gap: 6px;
+  }
+
+  .energy-readout,
+  .poise-readout,
+  .pile-readout,
+  .end-turn-button {
+    min-height: 52px;
+  }
+
+  .pile-readout strong,
+  .energy-readout strong,
+  .poise-readout strong {
+    font-size: 20px;
+  }
+
+  .end-turn-button {
+    font-size: 11px;
+  }
+
+  .combat-card {
+    flex-basis: 118px;
+  }
+
+  .meter {
+    padding: 8px;
+  }
+
+  .meter-label {
+    gap: 7px;
+    margin-bottom: 6px;
+    font-size: 11px;
+  }
+
+  .meter-track {
+    height: 7px;
+  }
+
+  .top-right-controls {
+    gap: 6px;
+  }
+
+  .help-button,
+  .debug-panel.is-collapsed,
+  .top-right-controls .debug-panel.is-collapsed,
+  .debug-collapsed-button {
+    width: 36px;
+    height: 36px;
+    min-height: 36px;
+  }
+
+  .help-button {
+    font-size: 19px;
+  }
+
+  .debug-collapsed-button {
+    font-size: 17px;
+  }
+
+  .music-control {
+    min-height: 36px;
+    gap: 5px;
+    padding: 3px;
+  }
+
+  .music-menu-button {
+    width: 28px;
+    height: 28px;
+  }
+
+  .music-menu-note {
+    font-size: 19px;
+  }
+}
+
+@media (hover: none) and (pointer: coarse) {
+  .combat-card:hover {
+    z-index: 1;
+    border-color: var(--card-border);
+    transform: translateY(var(--hand-card-rest-y));
+    filter: none;
+  }
+
+  .combat-card.is-selected {
+    z-index: 30;
+    border-color: #f5cf72;
+    transform: translateY(0);
+    filter: brightness(1.06);
   }
 }
