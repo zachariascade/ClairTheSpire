@@ -37,6 +37,7 @@ export type BattleSceneEvents = {
     label: string;
     result: ReactionResult;
   }) => void;
+  onReactionAttempt: (input: "parry" | "dodge") => boolean;
   onSceneReady: (scene: BattleScene) => void;
   onTimingInput: (event: { percent: number; tone: TimingInputTone }) => void;
 };
@@ -143,9 +144,6 @@ export class BattleScene extends Phaser.Scene {
     this.syncEnemyFormation();
     this.eventsBridge.onSceneReady(this);
 
-    this.input.keyboard?.on("keydown-A", () => this.handleReactionInput("parry"));
-    this.input.keyboard?.on("keydown-S", () => this.handleReactionInput("dodge"));
-    this.input.keyboard?.on("keydown-D", () => this.handleReactionInput("miss"));
     this.installReactionKeyHandler();
     this.publishActorBounds();
     this.scale.on("resize", this.handleResize, this);
@@ -207,6 +205,14 @@ export class BattleScene extends Phaser.Scene {
   resetDefenseCooldowns() {
     this.parryReadyAt = 0;
     this.dodgeReadyAt = 0;
+  }
+
+  attemptDodge() {
+    this.handleReactionInput("dodge");
+  }
+
+  attemptParry() {
+    this.handleReactionInput("parry");
   }
 
   setReactionTimingModifiers(modifiers: { dodgeWindowBonusMs: number; parryWindowBonusMs: number }) {
@@ -824,6 +830,10 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private handleReactionInput(input: ReactionInput) {
+    if ((input === "parry" || input === "dodge") && !this.canSpendReactionInput(input)) {
+      return;
+    }
+
     if (input === "parry") {
       this.parryPlayer();
     }
@@ -833,6 +843,17 @@ export class BattleScene extends Phaser.Scene {
     }
 
     this.resolveReactionInput(input);
+  }
+
+  private canSpendReactionInput(input: "parry" | "dodge") {
+    if (this.phase !== "enemyAttack" || !this.attackRunning || this.attackStartedAt === null) {
+      return false;
+    }
+
+    const pattern = attackPatterns[this.attackId];
+    const hasPendingHit = pattern.hits.some((_, index) => !this.resolvedHitIndexes.has(index));
+
+    return hasPendingHit && this.eventsBridge.onReactionAttempt(input);
   }
 
   private resolveReactionInput(input: ReactionInput) {

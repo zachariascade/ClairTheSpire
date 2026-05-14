@@ -3,12 +3,40 @@ import { getActiveEnemy, getNextLivingEnemyId, updateActiveEnemy, updateEnemy } 
 import { addStatus, applyDexterityToBlock, applyStrengthToDamage, getStatusStacks, hasStatus, setStatusStacks } from "./statuses";
 import type { CombatState } from "./types";
 import type { CharacterMechanicState, StanceId } from "../characters/types";
-import { getPerfectionStrength, PERFECTION_GAIN_ON_ENEMY_HIT } from "../characters/perfection";
+import {
+  getPerfectionRank,
+  getPerfectionStrength,
+  perfectionRankOrder,
+  PERFECTION_GAIN_ON_ENEMY_HIT,
+} from "../characters/perfection";
 import { getStanceDexterity, getStanceStrength } from "../characters/stances";
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
+export const MAX_POISE = 3;
 
 const appendLog = (state: CombatState, entry: string): string[] => [entry, ...state.log].slice(0, 6);
+const hasRelic = (state: CombatState, relicId: string) => state.player.relics.some((relic) => relic.id === relicId);
+
+const triggerRisingPoise = (state: CombatState): CombatState => ({
+  ...state,
+  player: {
+    ...state.player,
+    poise: clamp(state.player.poise + 1, 0, state.player.maxPoise),
+    relics: state.player.relics.map((relic) =>
+      relic.id === "rising-poise"
+        ? {
+            ...relic,
+            pulse: relic.pulse + 1,
+          }
+        : relic,
+    ),
+  },
+  lastTriggeredRelic: {
+    relicId: "rising-poise",
+    message: "Rising Poise grants 1 Poise.",
+  },
+  log: appendLog(state, "Rising Poise grants 1 Poise."),
+});
 
 export const getPlayerStrength = (state: CombatState): number =>
   getStatusStacks(state.player.statuses, "strength") + getStanceStrength(state);
@@ -23,6 +51,10 @@ export const applyPlayerDexterityBlock = (state: CombatState, block: number): nu
   Math.max(0, applyDexterityToBlock(state.player.statuses, block) + getStanceDexterity(state));
 
 const syncPerfectionStrengthStatus = (state: CombatState, previousMechanic?: CharacterMechanicState): CombatState => {
+  if (!hasRelic(state, "rank-strength")) {
+    return state;
+  }
+
   const previousStrength = previousMechanic ? getPerfectionStrength(previousMechanic) : 0;
   const nextStrength = getPerfectionStrength(state.player.mechanic);
   const strengthDelta = nextStrength - previousStrength;
@@ -50,16 +82,22 @@ const gainPerfectionFromEnemyHit = (state: CombatState, amount: number): CombatS
     return state;
   }
 
-  return syncPerfectionStrengthStatus({
+  const previousRank = getPerfectionRank(state.player.mechanic);
+  const nextMechanic = {
+    ...state.player.mechanic,
+    perfection: clamp(state.player.mechanic.perfection + amount, 0, state.player.mechanic.maxPerfection),
+  };
+  const nextRank = getPerfectionRank(nextMechanic);
+  const rankedUp = perfectionRankOrder.indexOf(nextRank) > perfectionRankOrder.indexOf(previousRank);
+  const nextState = syncPerfectionStrengthStatus({
     ...state,
     player: {
       ...state.player,
-      mechanic: {
-        ...state.player.mechanic,
-        perfection: clamp(state.player.mechanic.perfection + amount, 0, state.player.mechanic.maxPerfection),
-      },
+      mechanic: nextMechanic,
     },
   }, state.player.mechanic);
+
+  return rankedUp && hasRelic(nextState, "rising-poise") ? triggerRisingPoise(nextState) : nextState;
 };
 
 export const dealDamage = (state: CombatState, target: "enemy" | "player", amount: number): CombatState => {
@@ -120,6 +158,14 @@ export const gainEnergy = (state: CombatState, amount: number): CombatState => (
   },
 });
 
+export const gainPoise = (state: CombatState, amount: number): CombatState => ({
+  ...state,
+  player: {
+    ...state.player,
+    poise: clamp(state.player.poise + amount, 0, state.player.maxPoise),
+  },
+});
+
 export const changeStance = (state: CombatState, stance: StanceId): CombatState => {
   if (state.player.mechanic.type !== "stance") {
     return state;
@@ -174,6 +220,10 @@ const applyEffect = (state: CombatState, effect: CombatEffect): CombatState => {
 
   if (effect.type === "gainEnergy") {
     nextState = gainEnergy(nextState, effect.amount);
+  }
+
+  if (effect.type === "gainPoise") {
+    nextState = gainPoise(nextState, effect.amount);
   }
 
   if (effect.type === "applyStatus") {

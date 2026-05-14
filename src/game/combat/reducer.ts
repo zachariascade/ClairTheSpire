@@ -1,6 +1,6 @@
 import { attackPatterns, getNextAttackId } from "./attackPatterns";
 import { cardDefinitions, getCardPlayBlockReason } from "./cards";
-import { applyCombatEffects, applyPlayerStrengthDamage } from "./effects";
+import { applyCombatEffects, applyPlayerStrengthDamage, MAX_POISE } from "./effects";
 import { createEnemyCombatants, getActiveEnemy, getNextLivingEnemyId, updateEnemy } from "./enemies";
 import {
   applyStrengthToDamage,
@@ -12,15 +12,17 @@ import {
 } from "./statuses";
 import { characterDefinitions, createInitialMechanicState } from "../characters/definitions";
 import type { CharacterId, CharacterMechanicState } from "../characters/types";
-import { getPerfectionStrength, losePerfectionRank } from "../characters/perfection";
+import { getPerfectionRank, getPerfectionStrength, losePerfectionRank } from "../characters/perfection";
 import {
   applyCardPlayedRelics,
+  applyEndTurnRelics,
   applyEnemyAttackCompleteRelics,
   applyReshuffleRelics,
   createStartingRelics,
   setRelicProgress,
   triggerOpeningTempo,
 } from "../relics/engine";
+import type { RelicId } from "../relics/types";
 import type { CombatAction, CombatCard, CombatState, EnemyPhaseSummary, ReactionResult } from "./types";
 import type { EnemyDefinitionId } from "./enemies";
 
@@ -86,6 +88,8 @@ const appendLog = (state: CombatState, entry: string): string[] => [entry, ...st
 const getLivingEnemyIds = (state: CombatState): string[] =>
   state.enemies.filter((enemy) => enemy.hp > 0).map((enemy) => enemy.id);
 
+const hasRelic = (state: CombatState, relicId: string) => state.player.relics.some((relic) => relic.id === relicId);
+
 const createEnemyPhaseSummary = (attackName: string): EnemyPhaseSummary => ({
   attackName,
   parries: 0,
@@ -107,6 +111,10 @@ const updateSummary = (
 });
 
 const syncPerfectionStrengthStatus = (state: CombatState, previousMechanic?: CharacterMechanicState): CombatState => {
+  if (!hasRelic(state, "rank-strength")) {
+    return state;
+  }
+
   const previousStrength = previousMechanic ? getPerfectionStrength(previousMechanic) : 0;
   const nextStrength = getPerfectionStrength(state.player.mechanic);
   const strengthDelta = nextStrength - previousStrength;
@@ -172,6 +180,8 @@ export const createInitialCombatState = (setup: CharacterId | CombatSetup = "per
       block: 0,
       energy: character.maxEnergy,
       maxEnergy: character.maxEnergy,
+      poise: 0,
+      maxPoise: MAX_POISE,
       handSize: character.handSize,
       turnCardsPlayed: 0,
       combatTurnNumber: 1,
@@ -211,6 +221,105 @@ const loseOnePerfectionRank = (state: CombatState): CombatState => {
   }, state.player.mechanic);
 };
 
+const spendRankAsPoise = (state: CombatState): CombatState | null => {
+  if (!hasRelic(state, "rank-reserve") || state.player.mechanic.type !== "perfection") {
+    return null;
+  }
+
+  if (getPerfectionRank(state.player.mechanic) === "D") {
+    return null;
+  }
+
+  const previousMechanic = state.player.mechanic;
+
+  return syncPerfectionStrengthStatus({
+    ...state,
+    player: {
+      ...state.player,
+      mechanic: losePerfectionRank(state.player.mechanic),
+      relics: state.player.relics.map((relic) =>
+        relic.id === "rank-reserve"
+          ? {
+              ...relic,
+              pulse: relic.pulse + 1,
+            }
+          : relic,
+      ),
+    },
+    lastTriggeredRelic: {
+      relicId: "rank-reserve",
+      message: "Rank Reserve spends 1 rank as Poise.",
+    },
+    log: appendLog(state, "Rank Reserve spends 1 rank as Poise."),
+  }, previousMechanic);
+};
+
+const triggerRelicPulse = (state: CombatState, relicId: RelicId, message: string): CombatState => ({
+  ...state,
+  player: {
+    ...state.player,
+    relics: state.player.relics.map((relic) =>
+      relic.id === relicId
+        ? {
+            ...relic,
+            pulse: relic.pulse + 1,
+          }
+        : relic,
+    ),
+  },
+  lastTriggeredRelic: {
+    relicId,
+    message,
+  },
+  log: appendLog(state, message),
+});
+
+const applyParryCounterDamage = (
+  state: CombatState,
+  enemyId: string,
+  baseDamage: number,
+  message: string,
+  relicId?: RelicId,
+): CombatState => {
+  const enemy = state.enemies.find((candidate) => candidate.id === enemyId);
+  if (!enemy || enemy.hp <= 0) {
+    return state;
+  }
+
+  const baseCounterDamage = applyPlayerStrengthDamage(state, baseDamage);
+  const counterDamage = hasStatus(enemy.statuses, "vulnerable")
+    ? Math.round(baseCounterDamage * 1.5)
+    : baseCounterDamage;
+  const nextHp = clamp(enemy.hp - counterDamage, 0, enemy.maxHp);
+  const nextActiveEnemyId = nextHp <= 0 ? getNextLivingEnemyId(state, enemy.id) : state.activeEnemyId;
+  const currentSummary = state.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(enemy.intent);
+  const counterSummary = {
+    ...currentSummary,
+    riposteDamage: currentSummary.riposteDamage + counterDamage,
+  };
+  let nextState = updateEnemy(
+    {
+      ...state,
+      phase: nextHp <= 0 && !nextActiveEnemyId ? "won" : state.phase,
+      activeEnemyId: nextActiveEnemyId ?? state.activeEnemyId,
+      currentEnemyPhaseSummary: nextHp <= 0 ? null : counterSummary,
+      lastEnemyPhaseSummary: nextHp <= 0 ? counterSummary : state.lastEnemyPhaseSummary,
+      log: appendLog(state, `${message} deals ${counterDamage} damage.`),
+    },
+    enemy.id,
+    (candidate) => ({
+      ...candidate,
+      hp: nextHp,
+    }),
+  );
+
+  if (relicId) {
+    nextState = triggerRelicPulse(nextState, relicId, `${message} triggers.`);
+  }
+
+  return nextState;
+};
+
 export const getReactionTimingModifiers = (state: CombatState): { parryWindowBonusMs: number; dodgeWindowBonusMs: number } => {
   const focusBonus = hasStatus(state.player.statuses, "focus") ? 140 : 0;
 
@@ -225,10 +334,6 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
   const isParry = result === "PARRY_PERFECT" || result === "PARRY_NORMAL";
   const activeEnemy = getActiveEnemy(state);
   const incomingDamage = applyStrengthToDamage(activeEnemy.statuses, damage);
-  const baseRiposteDamage = applyPlayerStrengthDamage(state, 3);
-  const riposteDamage = hasStatus(activeEnemy.statuses, "vulnerable")
-    ? Math.round(baseRiposteDamage * 1.5)
-    : baseRiposteDamage;
 
   if (result === "REACTION_FAILED" && hasStatus(state.player.statuses, "recovery-step")) {
     return {
@@ -259,28 +364,15 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
     };
 
     if (hasStatus(state.player.statuses, "riposte-prep")) {
-      const nextHp = clamp(activeEnemy.hp - riposteDamage, 0, activeEnemy.maxHp);
-      const nextActiveEnemyId = nextHp <= 0 ? getNextLivingEnemyId(state, activeEnemy.id) : state.activeEnemyId;
-      const currentSummary = nextState.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(activeEnemy.intent);
-      const riposteSummary = {
-        ...currentSummary,
-        riposteDamage: currentSummary.riposteDamage + riposteDamage,
-      };
-      nextState = updateEnemy(
-        {
-          ...nextState,
-          phase: nextHp <= 0 && !nextActiveEnemyId ? "won" : nextState.phase,
-          activeEnemyId: nextActiveEnemyId ?? state.activeEnemyId,
-          currentEnemyPhaseSummary: nextHp <= 0 ? null : riposteSummary,
-          lastEnemyPhaseSummary: nextHp <= 0 ? riposteSummary : nextState.lastEnemyPhaseSummary,
-          log: appendLog(nextState, `Counter Attack deals ${riposteDamage} damage.`),
-        },
-        activeEnemy.id,
-        (enemy) => ({
-          ...enemy,
-          hp: nextHp,
-        }),
-      );
+      nextState = applyParryCounterDamage(nextState, activeEnemy.id, 3, "Counter Attack");
+    }
+
+    if (
+      hasRelic(nextState, "offensive-riposte") &&
+      nextState.player.mechanic.type === "stance" &&
+      nextState.player.mechanic.stance === "offensive"
+    ) {
+      nextState = applyParryCounterDamage(nextState, activeEnemy.id, 5, "Offensive Riposte", "offensive-riposte");
     }
 
     return nextState;
@@ -417,7 +509,7 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
       const firstEnemyId = enemyTurnQueue[0] ?? state.activeEnemyId;
       const firstEnemy = state.enemies.find((enemy) => enemy.id === firstEnemyId) ?? getActiveEnemy(state);
 
-      return {
+      return applyEndTurnRelics({
         ...state,
         phase: "enemyTurn",
         activeEnemyId: firstEnemy.id,
@@ -431,7 +523,7 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
           energy: 0,
         },
         log: appendLog(state, `${firstEnemy.name} commits to ${firstEnemy.intent}.`),
-      };
+      });
 
     case "BEGIN_ENEMY_ATTACK":
       if (state.phase !== "enemyTurn") {
@@ -449,6 +541,26 @@ export const combatReducer = (state: CombatState, action: CombatAction): CombatS
         phase: "enemyAttack",
         activeEnemyId: attackingEnemy.id,
         currentEnemyPhaseSummary: state.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(attackingEnemy.intent),
+      };
+
+    case "SPEND_POISE":
+      if (state.phase !== "enemyAttack") {
+        return state;
+      }
+
+      if (state.player.poise <= 0) {
+        return spendRankAsPoise(state) ?? {
+          ...state,
+          log: appendLog(state, "Not enough Poise."),
+        };
+      }
+
+      return {
+        ...state,
+        player: {
+          ...state.player,
+          poise: state.player.poise - 1,
+        },
       };
 
     case "REACTION_RESULT":

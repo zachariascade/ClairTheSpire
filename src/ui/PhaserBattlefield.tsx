@@ -5,6 +5,8 @@ import type { CombatPhase, EnemyCombatant, ReactionResult } from "../game/combat
 import { BattleScene } from "../phaser/BattleScene";
 
 export type PhaserBattlefieldHandle = {
+  attemptDodge: () => void;
+  attemptParry: () => void;
   dodgePlayer: () => void;
   flashEnemy: (enemyId?: string) => void;
   focusEnemy: (enemyId: string) => void;
@@ -47,6 +49,7 @@ type PhaserBattlefieldProps = {
     label: string;
     result: ReactionResult;
   }) => void;
+  onReactionAttempt: (input: "parry" | "dodge") => boolean;
   onTimingInput: (event: { percent: number; tone: "perfect" | "parry" | "dodge" | "miss" }) => void;
 };
 
@@ -70,6 +73,7 @@ export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattl
       onEnemyTargetSelect,
       onPlayerBoundsChange,
       onReactionResolved,
+      onReactionAttempt,
       onTimingInput,
     },
     ref,
@@ -89,6 +93,7 @@ export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattl
       onEnemyTargetSelect,
       onPlayerBoundsChange,
       onReactionResolved,
+      onReactionAttempt,
       onTimingInput,
     });
 
@@ -102,10 +107,13 @@ export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattl
       onEnemyTargetSelect,
       onPlayerBoundsChange,
       onReactionResolved,
+      onReactionAttempt,
       onTimingInput,
     };
 
     useImperativeHandle(ref, () => ({
+      attemptDodge: () => sceneRef.current?.attemptDodge(),
+      attemptParry: () => sceneRef.current?.attemptParry(),
       dodgePlayer: () => sceneRef.current?.dodgePlayer(),
       flashEnemy: (enemyId?: string) => sceneRef.current?.flashEnemy(enemyId),
       focusEnemy: (enemyId: string) => sceneRef.current?.focusEnemy(enemyId),
@@ -173,6 +181,7 @@ export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattl
           label: string;
           result: ReactionResult;
         }) => callbacksRef.current.onReactionResolved(event),
+        onReactionAttempt: (input: "parry" | "dodge") => callbacksRef.current.onReactionAttempt(input),
         onSceneReady: (scene: BattleScene) => {
           sceneRef.current = scene;
           setSceneReadyVersion((version) => version + 1);

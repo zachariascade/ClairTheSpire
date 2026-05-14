@@ -44,6 +44,12 @@ export type CardPresentationStep =
       delayMs: number;
     }
   | {
+      type: "poise";
+      target: "player";
+      amount: number;
+      delayMs: number;
+    }
+  | {
       type: "stance";
       target: "player";
       label: string;
@@ -64,6 +70,11 @@ export type CombatEffect =
     }
   | {
       type: "gainEnergy";
+      amount: number;
+      log?: string;
+    }
+  | {
+      type: "gainPoise";
       amount: number;
       log?: string;
     }
@@ -144,6 +155,17 @@ export const cardDefinitions: Record<string, CardDefinition> = {
     target: "self",
     effects: [{ type: "gainBlock", amount: 5 }],
     presentation: [{ type: "block", target: "player", amount: 5, delayMs: 0 }],
+  },
+  poise: {
+    id: "poise",
+    name: "Poise",
+    cost: 1,
+    kind: "skill",
+    rulesText: "Gain 1 Poise.",
+    pool: "colorless",
+    target: "self",
+    effects: [{ type: "gainPoise", amount: 1, log: "Poise restores 1 Poise." }],
+    presentation: [{ type: "poise", target: "player", amount: 1, delayMs: 0 }],
   },
   focus: {
     id: "focus",

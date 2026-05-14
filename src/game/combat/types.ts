@@ -45,6 +45,8 @@ export type CombatState = {
     block: number;
     energy: number;
     maxEnergy: number;
+    poise: number;
+    maxPoise: number;
     handSize: number;
     turnCardsPlayed: number;
     combatTurnNumber: number;
@@ -80,6 +82,7 @@ export type CombatAction =
   | { type: "PLAY_CARD"; cardId: string; targetEnemyId?: string }
   | { type: "END_TURN" }
   | { type: "BEGIN_ENEMY_ATTACK" }
+  | { type: "SPEND_POISE"; reaction: "parry" | "dodge" }
   | { type: "REACTION_RESULT"; result: ReactionResult; damage?: number; hitLabel?: string }
   | { type: "ENEMY_ATTACK_COMPLETE" }
   | { type: "SET_NEXT_ATTACK"; attackId: AttackId }

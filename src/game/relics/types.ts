@@ -1,4 +1,14 @@
-export type RelicId = "duelists-tempo" | "mirror-guard" | "iron-thread" | "steady-pulse";
+export type RelicId =
+  | "duelists-tempo"
+  | "mirror-guard"
+  | "iron-thread"
+  | "steady-pulse"
+  | "rising-poise"
+  | "rank-strength"
+  | "rank-reserve"
+  | "virtuoso-reserve"
+  | "defensive-dexterity"
+  | "offensive-riposte";
 
 export type RelicRarity = "common" | "uncommon" | "rare" | "character";
 

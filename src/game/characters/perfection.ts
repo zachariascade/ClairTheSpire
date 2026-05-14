@@ -2,35 +2,38 @@ import type { CharacterMechanicState, PerfectionMechanicState, PerfectionRank } 
 
 export const PERFECTION_GAIN_ON_ENEMY_HIT = 1;
 
-export const perfectionRankRules: Record<PerfectionRank, { label: PerfectionRank; threshold: number; strength: number }> = {
+export const perfectionRankRules: Record<PerfectionRank, { label: PerfectionRank; threshold: number }> = {
   D: {
     label: "D",
     threshold: 0,
-    strength: 0,
   },
   C: {
     label: "C",
     threshold: 2,
-    strength: 1,
   },
   B: {
     label: "B",
     threshold: 3,
-    strength: 2,
   },
   A: {
     label: "A",
     threshold: 5,
-    strength: 3,
   },
   S: {
     label: "S",
     threshold: 9,
-    strength: 5,
   },
 };
 
 export const perfectionRankOrder: PerfectionRank[] = ["D", "C", "B", "A", "S"];
+
+export const perfectionRankStrengthRelicBonuses: Record<PerfectionRank, number> = {
+  D: 0,
+  C: 1,
+  B: 2,
+  A: 3,
+  S: 5,
+};
 
 export const getPerfectionRank = (mechanic: PerfectionMechanicState): PerfectionRank => {
   if (mechanic.perfection >= perfectionRankRules.S.threshold) {
@@ -84,7 +87,7 @@ export const getPerfectionStrength = (mechanic: CharacterMechanicState): number 
     return 0;
   }
 
-  return perfectionRankRules[getPerfectionRank(mechanic)].strength;
+  return perfectionRankStrengthRelicBonuses[getPerfectionRank(mechanic)];
 };
 
 export const applyPerfectionStrengthDamage = (mechanic: CharacterMechanicState, damage: number): number =>

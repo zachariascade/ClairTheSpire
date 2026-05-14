@@ -1,4 +1,4 @@
-import { dealDamage, gainBlock } from "../combat/effects";
+import { dealDamage, gainBlock, gainPoise } from "../combat/effects";
 import type { CombatState, EnemyPhaseSummary } from "../combat/types";
 import type { CharacterId } from "../characters/types";
 import type { PlayerRelic, RelicId, RelicTrigger } from "./types";
@@ -15,7 +15,10 @@ const createRelic = (id: RelicId): PlayerRelic => ({
 
 export const createStartingRelics = (characterId: CharacterId): PlayerRelic[] => {
   const characterRelic: RelicId = characterId === "fencer" ? "mirror-guard" : "duelists-tempo";
-  const relicIds: RelicId[] = [characterRelic, "iron-thread", "steady-pulse"];
+  const relicIds: RelicId[] =
+    characterId === "perfector"
+      ? [characterRelic, "rising-poise", "rank-strength", "rank-reserve", "iron-thread", "steady-pulse"]
+      : [characterRelic, "virtuoso-reserve", "defensive-dexterity", "offensive-riposte", "iron-thread", "steady-pulse"];
 
   return relicIds.map(createRelic);
 };
@@ -84,6 +87,18 @@ export const applyReshuffleRelics = (state: CombatState): CombatState => {
   }
 
   return triggerRelic(gainBlock(state, 3), "iron-thread", "Iron Thread grants 3 Block.");
+};
+
+export const applyEndTurnRelics = (state: CombatState): CombatState => {
+  if (
+    !hasRelic(state, "virtuoso-reserve") ||
+    state.player.mechanic.type !== "stance" ||
+    state.player.mechanic.stance !== "virtuoso"
+  ) {
+    return state;
+  }
+
+  return triggerRelic(gainPoise(state, 1), "virtuoso-reserve", "Virtuoso Reserve grants 1 Poise.");
 };
 
 export const applyEnemyAttackCompleteRelics = (
