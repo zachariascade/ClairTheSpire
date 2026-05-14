@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import {
   attackOrder,
   attackPatterns,
@@ -25,17 +25,19 @@ import {
   type EnemyDefinitionId,
 } from "../game/combat/enemies";
 import { combatReducer, createInitialCombatState, getReactionTimingModifiers } from "../game/combat/reducer";
-import { getStatusStacks, hasStatus, type StatusCollection, type StatusId } from "../game/combat/statuses";
-import type { CombatCard, EnemyCombatant, EnemyPhaseSummary, ReactionResult } from "../game/combat/types";
+import {
+  applyDexterityToBlock,
+  applyStrengthToDamage,
+  hasStatus,
+  type StatusCollection,
+  type StatusId,
+} from "../game/combat/statuses";
+import type { CombatCard, CombatState, EnemyCombatant, EnemyPhaseSummary, ReactionResult } from "../game/combat/types";
 import { playSfx, preloadSfx } from "../game/audio/audioManager";
 import { characterDefinitions, characterOrder } from "../game/characters/definitions";
-import {
-  getPerfectionDamageDealtMultiplier,
-  getPerfectionRank,
-  perfectionRankRules,
-} from "../game/characters/perfection";
+import { getPerfectionRank, getPerfectionTierProgress, perfectionRankRules } from "../game/characters/perfection";
 import { stanceRules } from "../game/characters/stances";
-import type { CharacterId, CharacterMechanicState } from "../game/characters/types";
+import type { CharacterId, CharacterMechanicState, StanceId } from "../game/characters/types";
 import { relicDefinitions } from "../game/relics/definitions";
 import type { PlayerRelic } from "../game/relics/types";
 import { PhaserBattlefield, type PhaserBattlefieldHandle } from "./PhaserBattlefield";
@@ -51,6 +53,7 @@ type ActorFeedback = {
   id: number;
   text: string;
   tone: "damage" | "good" | "block" | "perfect" | "parry" | "dodge" | "miss";
+  showText: boolean;
 };
 type TimingInputMarker = {
   id: number;
@@ -116,11 +119,17 @@ const defaultUrlSelection: UrlSelection = {
   enemyIds: defaultEnemySelection,
 };
 const statusDisplayDefinitions: Record<StatusId, StatusDisplayDefinition> = {
+  dexterity: {
+    label: "Dexterity",
+    shortLabel: "De",
+    tone: "good",
+    description: "Increases Block gained from shields by 1 per stack.",
+  },
   focus: {
     label: "Focus",
     shortLabel: "Fo",
     tone: "good",
-    description: "Widens parry and dodge timing windows. Perfector gains extra Perfection from parries.",
+    description: "Widens parry and dodge timing windows.",
   },
   "recovery-step": {
     label: "Recovery Step",
@@ -134,6 +143,12 @@ const statusDisplayDefinitions: Record<StatusId, StatusDisplayDefinition> = {
     tone: "good",
     description: "This turn, all parries counter for 3 damage before damage modifiers.",
   },
+  strength: {
+    label: "Strength",
+    shortLabel: "St",
+    tone: "good",
+    description: "Increases attack and counter damage by 1 per stack.",
+  },
   vulnerable: {
     label: "Vulnerable",
     shortLabel: "Vu",
@@ -146,6 +161,16 @@ const cardKeywordDefinitions: CardKeywordDefinition[] = [
     label: "Block",
     aliases: ["block"],
     description: "Prevents incoming attack damage before HP is lost.",
+  },
+  {
+    label: "Dexterity",
+    aliases: ["dexterity", "dex"],
+    description: "Increases Block gained from shields.",
+  },
+  {
+    label: "Strength",
+    aliases: ["strength"],
+    description: "Increases attack and counter damage.",
   },
   {
     label: "Vulnerable",
@@ -237,37 +262,68 @@ const writeUrlSelection = (selection: UrlSelection, route: AppRoute, mode: "push
   window.history.replaceState(null, "", url);
 };
 
-const getDamageMultiplier = (mechanic: CharacterMechanicState, enemyIsVulnerable = false) =>
-  (mechanic.type === "stance" ? stanceRules[mechanic.stance].damageDealt : 1) *
-  getPerfectionDamageDealtMultiplier(mechanic) *
-  (enemyIsVulnerable ? 1.5 : 1);
+const getModifiedDamage = (
+  baseDamage: number,
+  mechanic: CharacterMechanicState,
+  statuses?: StatusCollection,
+  enemyIsVulnerable = false,
+) => {
+  const stanceStrength = mechanic.type === "stance" ? stanceRules[mechanic.stance].strength : 0;
+  const statusStrengthDamage = statuses ? applyStrengthToDamage(statuses, baseDamage) : Math.round(baseDamage);
+  const strengthDamage = Math.max(0, statusStrengthDamage + stanceStrength);
+
+  return enemyIsVulnerable ? Math.round(strengthDamage * 1.5) : strengthDamage;
+};
+
+const getModifiedBlock = (baseBlock: number, mechanic: CharacterMechanicState, statuses?: StatusCollection) => {
+  const stanceDexterity = mechanic.type === "stance" ? stanceRules[mechanic.stance].dexterity : 0;
+  const statusDexterityBlock = statuses ? applyDexterityToBlock(statuses, baseBlock) : Math.round(baseBlock);
+
+  return Math.max(0, statusDexterityBlock + stanceDexterity);
+};
 
 const getPresentationDamage = (
   damage: CardPresentationDamage,
   mechanic: CharacterMechanicState,
+  statuses?: StatusCollection,
   enemyIsVulnerable = false,
 ) => {
   const perfection = mechanic.type === "perfection" ? mechanic.perfection : 0;
   const transitions = mechanic.type === "stance" ? mechanic.transitionsThisTurn : 0;
 
   if (damage.type === "fixed") {
-    return Math.round(damage.amount * getDamageMultiplier(mechanic, enemyIsVulnerable));
+    return getModifiedDamage(damage.amount, mechanic, statuses, enemyIsVulnerable);
   }
 
   if (damage.type === "spendPerfection") {
-    return Math.round(
-      (damage.baseDamage + perfection * damage.damagePerPerfection) * getDamageMultiplier(mechanic, enemyIsVulnerable),
-    );
+    return getModifiedDamage(damage.baseDamage + perfection * damage.damagePerPerfection, mechanic, statuses, enemyIsVulnerable);
   }
 
-  return Math.round(
-    (damage.baseDamage + transitions * damage.damagePerTransition) * getDamageMultiplier(mechanic, enemyIsVulnerable),
-  );
+  return getModifiedDamage(damage.baseDamage + transitions * damage.damagePerTransition, mechanic, statuses, enemyIsVulnerable);
+};
+
+const getCurrentCardBlock = (
+  definition: CardDefinition,
+  mechanic: CharacterMechanicState,
+  statuses?: StatusCollection,
+) => {
+  const blockEffect = definition.effects.find((effect) => effect.type === "gainBlock");
+
+  if (blockEffect?.type !== "gainBlock") {
+    return null;
+  }
+
+  return {
+    baseBlock: blockEffect.amount,
+    displayedBlock: blockEffect.amount,
+    currentBlock: getModifiedBlock(blockEffect.amount, mechanic, statuses),
+  };
 };
 
 const resolveCardPresentation = (
   definition: CardDefinition,
   mechanic: CharacterMechanicState,
+  statuses?: StatusCollection,
   enemyIsVulnerable = false,
 ): ResolvedCardPresentationStep[] =>
   definition.presentation.map((step: CardPresentationStep) => {
@@ -275,7 +331,7 @@ const resolveCardPresentation = (
       return {
         delayMs: step.delayMs,
         target: step.target,
-        text: `-${getPresentationDamage(step.damage, mechanic, enemyIsVulnerable)}`,
+        text: `-${getPresentationDamage(step.damage, mechanic, statuses, enemyIsVulnerable)}`,
         tone: "damage",
         impact: true,
         animation: step.animation,
@@ -283,10 +339,12 @@ const resolveCardPresentation = (
     }
 
     if (step.type === "block") {
+      const block = getModifiedBlock(step.amount, mechanic, statuses);
+
       return {
         delayMs: step.delayMs,
         target: step.target,
-        text: `+${step.amount} Block`,
+        text: `+${block} Block`,
         tone: "block",
         impact: false,
       };
@@ -314,18 +372,18 @@ const resolveCardPresentation = (
 const getCurrentCardDamage = (
   definition: CardDefinition,
   mechanic: CharacterMechanicState,
+  statuses?: StatusCollection,
   enemyIsVulnerable = false,
 ) => {
   const damageEffect = definition.effects.find((effect) => effect.type === "damage" && effect.target === "enemy");
   const transitionDamageEffect = definition.effects.find((effect) => effect.type === "damagePerStanceTransition");
   const perfectionDamageEffect = definition.effects.find((effect) => effect.type === "spendPerfectionDamage");
-  const damageMultiplier = getDamageMultiplier(mechanic, enemyIsVulnerable);
 
   if (damageEffect?.type === "damage") {
     return {
       baseDamage: damageEffect.amount,
       displayedDamage: damageEffect.amount,
-      currentDamage: Math.round(damageEffect.amount * damageMultiplier),
+      currentDamage: getModifiedDamage(damageEffect.amount, mechanic, statuses, enemyIsVulnerable),
     };
   }
 
@@ -336,7 +394,7 @@ const getCurrentCardDamage = (
     return {
       baseDamage,
       displayedDamage: transitionDamageEffect.baseDamage,
-      currentDamage: Math.round(baseDamage * damageMultiplier),
+      currentDamage: getModifiedDamage(baseDamage, mechanic, statuses, enemyIsVulnerable),
     };
   }
 
@@ -347,7 +405,7 @@ const getCurrentCardDamage = (
     return {
       baseDamage,
       displayedDamage: perfectionDamageEffect.baseDamage,
-      currentDamage: Math.round(baseDamage * damageMultiplier),
+      currentDamage: getModifiedDamage(baseDamage, mechanic, statuses, enemyIsVulnerable),
     };
   }
 
@@ -398,6 +456,7 @@ const getCardRuleKeywords = (rulesText: string) =>
 const renderCardRulesText = (
   definition: CardDefinition,
   mechanic: CharacterMechanicState,
+  statuses?: StatusCollection,
   enemyIsVulnerable = false,
 ) => {
   const stanceEntries = Object.entries(stanceRules);
@@ -406,13 +465,18 @@ const renderCardRulesText = (
     .flatMap((keyword) => keyword.aliases)
     .map(escapeRegExp)
     .join("|");
-  const damagePreview = getCurrentCardDamage(definition, mechanic, enemyIsVulnerable);
+  const damagePreview = getCurrentCardDamage(definition, mechanic, statuses, enemyIsVulnerable);
+  const blockPreview = getCurrentCardBlock(definition, mechanic, statuses);
   const damageNumberPattern =
     damagePreview && damagePreview.currentDamage !== damagePreview.baseDamage
       ? new RegExp(`(?<=\\bDeal\\s)${damagePreview.displayedDamage}\\b`)
       : null;
+  const blockNumberPattern =
+    blockPreview && blockPreview.currentBlock !== blockPreview.baseBlock
+      ? new RegExp(`(?<=\\bGain\\s)${blockPreview.displayedBlock}\\b(?=\\s+Block\\b)`)
+      : null;
   const combinedPattern = new RegExp(
-    `${damageNumberPattern ? `(${damageNumberPattern.source})|` : ""}\\b(${stancePattern}|${keywordPattern})\\b`,
+    `${damageNumberPattern ? `(${damageNumberPattern.source})|` : ""}${blockNumberPattern ? `(${blockNumberPattern.source})|` : ""}\\b(${stancePattern}|${keywordPattern})\\b`,
     "gi",
   );
   const parts = definition.rulesText.split(combinedPattern).filter((part): part is string => part !== undefined && part !== "");
@@ -443,6 +507,16 @@ const renderCardRulesText = (
       return (
         <span className={`card-rules-damage card-rules-damage-${tone}`} key={`${part}-${index}`}>
           {damagePreview.currentDamage}
+        </span>
+      );
+    }
+
+    if (blockPreview && blockNumberPattern && part === String(blockPreview.displayedBlock)) {
+      const tone = blockPreview.currentBlock > blockPreview.baseBlock ? "up" : "down";
+
+      return (
+        <span className={`card-rules-damage card-rules-damage-${tone}`} key={`${part}-${index}`}>
+          {blockPreview.currentBlock}
         </span>
       );
     }
@@ -597,9 +671,14 @@ export function App() {
     return () => window.removeEventListener("popstate", handlePopState);
   }, []);
 
-  const showActorFeedback = useCallback((target: "player" | "enemy", text: string, tone: ActorFeedback["tone"]) => {
+  const showActorFeedback = useCallback((
+    target: "player" | "enemy",
+    text: string,
+    tone: ActorFeedback["tone"],
+    options: { showText?: boolean } = {},
+  ) => {
     feedbackIdRef.current += 1;
-    const feedback = { id: feedbackIdRef.current, text, tone };
+    const feedback = { id: feedbackIdRef.current, text, tone, showText: options.showText ?? true };
     const setter = target === "enemy" ? setEnemyFeedback : setPlayerFeedback;
 
     setter(feedback);
@@ -623,7 +702,12 @@ export function App() {
       const definition = cardDefinitions[card.definitionId];
       const targetEnemy = targetEnemyId ? state.enemies.find((enemy) => enemy.id === targetEnemyId) ?? activeEnemy : activeEnemy;
       const enemyIsVulnerable = hasStatus(targetEnemy.statuses, "vulnerable");
-      const presentation = resolveCardPresentation(definition, state.player.mechanic, enemyIsVulnerable);
+      const presentation = resolveCardPresentation(
+        definition,
+        state.player.mechanic,
+        state.player.statuses,
+        enemyIsVulnerable,
+      );
       if (definition.target === "enemy") {
         battlefieldRef.current?.focusEnemy(targetEnemy.id);
         setEnemyRect(enemyRects[targetEnemy.id] ?? enemyRect);
@@ -646,7 +730,7 @@ export function App() {
                 maxHp: targetEnemy.maxHp,
               });
             }
-            showActorFeedback("enemy", step.text, "damage");
+            showActorFeedback("enemy", step.text, "damage", { showText: false });
             return;
           }
 
@@ -708,6 +792,29 @@ export function App() {
     [playCard, selectedCard],
   );
 
+  const handlePhaserEnemyTargetHover = useCallback(
+    (enemyId: string | null) => {
+      if (!isAimingEnemyCard) {
+        setHoveredEnemyId(null);
+        return;
+      }
+
+      setHoveredEnemyId(enemyId);
+    },
+    [isAimingEnemyCard],
+  );
+
+  const handlePhaserEnemyTargetSelect = useCallback(
+    (enemyId: string) => {
+      if (!isAimingEnemyCard) {
+        return;
+      }
+
+      playSelectedCardOnEnemy(enemyId);
+    },
+    [isAimingEnemyCard, playSelectedCardOnEnemy],
+  );
+
   useEffect(() => {
     if (!isAimingTargetedCard || !selectedCardRect) {
       setTargetPointer(null);
@@ -724,17 +831,6 @@ export function App() {
     const handlePointerMove = (event: PointerEvent) => {
       setTargetPointer({ x: event.clientX, y: event.clientY });
       if (isAimingEnemyCard) {
-        const hoveredEnemyEntry = state.enemies
-          .filter((enemy) => enemy.hp > 0)
-          .map((enemy) => [enemy.id, enemyRects[enemy.id]] as const)
-          .find(([, rect]) =>
-            Boolean(rect) &&
-            event.clientX >= rect.left &&
-            event.clientX <= rect.right &&
-            event.clientY >= rect.top &&
-            event.clientY <= rect.bottom,
-          );
-        setHoveredEnemyId(hoveredEnemyEntry?.[0] ?? null);
         setIsPlayerTargetHovered(false);
         return;
       }
@@ -752,7 +848,7 @@ export function App() {
 
     window.addEventListener("pointermove", handlePointerMove);
     return () => window.removeEventListener("pointermove", handlePointerMove);
-  }, [enemyRects, isAimingEnemyCard, isAimingPlayerCard, isAimingTargetedCard, playerRect, selectedCardRect, state.enemies]);
+  }, [isAimingEnemyCard, isAimingPlayerCard, isAimingTargetedCard, playerRect, selectedCardRect]);
 
   useEffect(() => {
     if (targetCornerExitTimerRef.current !== null) {
@@ -793,16 +889,10 @@ export function App() {
       (result === "PARRY_PERFECT" || result === "PARRY_NORMAL") && hasStatus(state.player.statuses, "riposte-prep");
     const tone = result === "HIT_TAKEN" || (result === "REACTION_FAILED" && !recoveryCatches) ? "bad" : "good";
     const displayLabel = recoveryCatches ? "Recovery" : riposteCounters ? "Counter" : label;
-    const stanceDamageReceived =
-      state.player.mechanic.type === "stance" ? stanceRules[state.player.mechanic.stance].damageReceived : 1;
-    const baseDamage = Math.round(hit.damage * stanceDamageReceived);
-    const hpDamage = Math.max(0, baseDamage - state.player.block);
-    const stanceDamageDealt =
-      state.player.mechanic.type === "stance" ? stanceRules[state.player.mechanic.stance].damageDealt : 1;
+    const incomingDamage = applyStrengthToDamage(activeEnemy.statuses, hit.damage);
+    const hpDamage = Math.max(0, incomingDamage - state.player.block);
     const enemyIsVulnerable = hasStatus(activeEnemy.statuses, "vulnerable");
-    const riposteDamage = Math.round(
-      3 * stanceDamageDealt * getPerfectionDamageDealtMultiplier(state.player.mechanic) * (enemyIsVulnerable ? 1.5 : 1),
-    );
+    const riposteDamage = getModifiedDamage(3, state.player.mechanic, state.player.statuses, enemyIsVulnerable);
 
     battlefieldRef.current?.showReactionLabel(displayLabel, tone);
     if (result === "PARRY_PERFECT" || result === "PARRY_NORMAL" || result === "DODGE_SUCCESS") {
@@ -817,7 +907,9 @@ export function App() {
       if (hpDamage > 0) {
         battlefieldRef.current?.showFloatingText("player", `-${hpDamage}`, "bad");
       }
-      showActorFeedback("player", hpDamage > 0 ? `-${hpDamage}` : "Blocked", hpDamage > 0 ? "damage" : "block");
+      showActorFeedback("player", hpDamage > 0 ? `-${hpDamage}` : "Blocked", hpDamage > 0 ? "damage" : "block", {
+        showText: hpDamage <= 0,
+      });
     }
     if (result === "REACTION_FAILED" && recoveryCatches) {
       playSfx("status.buff", { volume: 0.44 });
@@ -827,24 +919,21 @@ export function App() {
     if (result === "PARRY_PERFECT") {
       playSfx("status.perfection", { volume: 0.52, cooldownMs: 80 });
       playSfx("combat.metalBlock", { volume: 0.48, playbackRateVariance: 0.05 });
-      battlefieldRef.current?.parryPlayer();
       battlefieldRef.current?.showFloatingText("player", "Perfect", "good");
       showActorFeedback("player", "Perfect", "perfect");
     }
     if (result === "PARRY_NORMAL") {
       playSfx("combat.metalBlock", { volume: 0.48, playbackRateVariance: 0.05 });
-      battlefieldRef.current?.parryPlayer();
       battlefieldRef.current?.showReactionLabel("Parry", "good");
     }
     if (result === "DODGE_SUCCESS") {
       playSfx("combat.whoosh", { volume: 0.35, playbackRateVariance: 0.09 });
-      battlefieldRef.current?.dodgePlayer();
     }
     if (riposteCounters) {
       playSfx("combat.swordClash", { volume: 0.62, playbackRateVariance: 0.06 });
       battlefieldRef.current?.flashEnemy();
       battlefieldRef.current?.showFloatingText("enemy", `-${riposteDamage}`, "damage");
-      showActorFeedback("enemy", `-${riposteDamage}`, "damage");
+      showActorFeedback("enemy", `-${riposteDamage}`, "damage", { showText: false });
     }
     dispatch({ type: "REACTION_RESULT", result, damage: hit.damage, hitLabel: hit.label });
   }, [
@@ -980,7 +1069,24 @@ export function App() {
           onHelp={() => setHelpModalOpen(true)}
           onMusicToggle={toggleMusic}
           onMusicToggleExpanded={() => setMusicMenuExpanded((expanded) => !expanded)}
-        />
+        >
+          <DebugPanel
+            collapsed={debugCollapsed}
+            currentAttack={currentAttackPattern}
+            disabled={state.phase !== "playerTurn"}
+            attackStartedAt={attackStartedAt}
+            inputMarker={timingInputMarker}
+            log={state.log}
+            lastEnemyPhaseSummary={state.lastEnemyPhaseSummary}
+            showTimingAssist={showTimingAssist}
+            onReset={() => {
+              dispatch({ type: "RESET_COMBAT", characterId: state.player.characterId, enemyIds: selectedEnemyIds });
+            }}
+            onSetAttack={(attackId) => dispatch({ type: "SET_NEXT_ATTACK", attackId })}
+            onToggleCollapsed={() => setDebugCollapsed((value) => !value)}
+            onToggleTiming={() => setShowTimingAssist((value) => !value)}
+          />
+        </TopRightControls>
         {helpModalOpen && <HowToPlayModal onClose={() => setHelpModalOpen(false)} />}
         <PhaserBattlefield
           ref={battlefieldRef}
@@ -990,12 +1096,15 @@ export function App() {
           playerSpritePath={`${import.meta.env.BASE_URL}${characterDefinitions[state.player.characterId].image}`}
           enemies={state.enemies}
           activeEnemyId={state.activeEnemyId}
+          enemyTargetingEnabled={isAimingEnemyCard && state.phase === "playerTurn" && Boolean(selectedCard)}
           reactionTimingModifiers={reactionTimingModifiers}
           onAttackComplete={handlePhaserAttackComplete}
           onAttackImpact={handlePhaserAttackImpact}
           onAttackStarted={handlePhaserAttackStarted}
           onEnemyBoundsChange={setEnemyRect}
           onEnemyBoundsListChange={setEnemyRects}
+          onEnemyTargetHover={handlePhaserEnemyTargetHover}
+          onEnemyTargetSelect={handlePhaserEnemyTargetSelect}
           onPlayerBoundsChange={setPlayerRect}
           onReactionResolved={handlePhaserReactionResolved}
           onTimingInput={handlePhaserTimingInput}
@@ -1014,6 +1123,8 @@ export function App() {
           />
         ))}
 
+        <PlayerBattlefieldHud bounds={playerRect} player={state.player} />
+
         <TargetingOverlay
           activeCardRect={selectedCardRect}
           pointer={isAimingEnemyCard ? targetPointer : null}
@@ -1023,34 +1134,13 @@ export function App() {
         />
 
         {isAimingPlayerCard && selectedCard && targetPointer && (
-          <FloatingTargetCard card={selectedCard} mechanic={state.player.mechanic} pointer={targetPointer} />
+          <FloatingTargetCard
+            card={selectedCard}
+            mechanic={state.player.mechanic}
+            statuses={state.player.statuses}
+            pointer={targetPointer}
+          />
         )}
-
-        {isAimingEnemyCard && selectedCard && state.enemies.map((enemy) => {
-          const bounds = enemyRects[enemy.id];
-          if (!bounds || enemy.hp <= 0) {
-            return null;
-          }
-
-          const isHovered = hoveredEnemyId === enemy.id;
-          return (
-            <button
-              className={`enemy-target-button ${isHovered ? "is-armed" : ""}`}
-              key={enemy.id}
-              type="button"
-              style={{
-                left: bounds.left,
-                top: bounds.top,
-                width: bounds.width,
-                height: bounds.height,
-              }}
-              aria-label={`Play ${selectedDefinition?.name ?? "card"} on ${enemy.name}`}
-              onPointerEnter={() => setHoveredEnemyId(enemy.id)}
-              onPointerLeave={() => setHoveredEnemyId(null)}
-              onClick={() => playSelectedCardOnEnemy(enemy.id)}
-            />
-          );
-        })}
 
         {isAimingPlayerCard && targetBounds && (
           <button
@@ -1102,30 +1192,13 @@ export function App() {
             value={state.player.hp}
             max={state.player.maxHp}
             block={state.player.block}
-            statuses={state.player.statuses}
             tone="red"
           />
-          <CharacterMechanicHud mechanic={state.player.mechanic} />
         </div>
-        <RelicHud relics={state.player.relics} />
 
-        <div className="left-rail">
-          <DebugPanel
-            collapsed={debugCollapsed}
-            currentAttack={currentAttackPattern}
-            disabled={state.phase !== "playerTurn"}
-            attackStartedAt={attackStartedAt}
-            inputMarker={timingInputMarker}
-            log={state.log}
-            lastEnemyPhaseSummary={state.lastEnemyPhaseSummary}
-            showTimingAssist={showTimingAssist}
-            onReset={() => {
-              dispatch({ type: "RESET_COMBAT", characterId: state.player.characterId, enemyIds: selectedEnemyIds });
-            }}
-            onSetAttack={(attackId) => dispatch({ type: "SET_NEXT_ATTACK", attackId })}
-            onToggleCollapsed={() => setDebugCollapsed((value) => !value)}
-            onToggleTiming={() => setShowTimingAssist((value) => !value)}
-          />
+        <div className="left-hud">
+          <RelicHud relics={state.player.relics} />
+          <CharacterMechanicHud mechanic={state.player.mechanic} />
           <EnemyTurnInputHint />
         </div>
 
@@ -1148,6 +1221,7 @@ export function App() {
                 key={card.instanceId}
                 card={card}
                 mechanic={state.player.mechanic}
+                statuses={state.player.statuses}
                 selected={state.selectedCardId === card.instanceId}
                 enemyIsVulnerablePreview={state.selectedCardId === card.instanceId && hoveredEnemyIsVulnerable}
                 disabled={
@@ -1208,12 +1282,14 @@ export function App() {
 }
 
 function TopRightControls({
+  children,
   musicExpanded,
   musicPlayback,
   onHelp,
   onMusicToggle,
   onMusicToggleExpanded,
 }: {
+  children?: ReactNode;
   musicExpanded: boolean;
   musicPlayback: MusicPlaybackState;
   onHelp: () => void;
@@ -1222,15 +1298,16 @@ function TopRightControls({
 }) {
   return (
     <div className="top-right-controls">
-      <button className="help-button" type="button" aria-label="How to Play" title="How to Play" onClick={onHelp}>
-        ?
-      </button>
       <MusicToggle
         expanded={musicExpanded}
         playback={musicPlayback}
         onToggle={onMusicToggle}
         onToggleExpanded={onMusicToggleExpanded}
       />
+      {children}
+      <button className="help-button" type="button" aria-label="How to Play" title="How to Play" onClick={onHelp}>
+        ?
+      </button>
     </div>
   );
 }
@@ -1515,22 +1592,19 @@ function CharacterSelectScreen({
 function CharacterMechanicHud({ mechanic }: { mechanic: CharacterMechanicState }) {
   if (mechanic.type === "perfection") {
     const rank = getPerfectionRank(mechanic);
-    const bonusPercent = Math.round((perfectionRankRules[rank].damageDealt - 1) * 100);
+    const tierProgress = getPerfectionTierProgress(mechanic);
+    const strength = perfectionRankRules[rank].strength;
+    const rankBonus = strength > 0 ? `${strength} Strength` : "No bonus";
 
     return (
-      <div className="perfection-meter" aria-label="Perfection">
-        <div className="meter-label">
-          <span>Perfection</span>
-          <strong>
-            {rank} {bonusPercent > 0 ? `+${bonusPercent}%` : "No bonus"}
-          </strong>
-        </div>
-        <div className="meter-track">
-          <div className="meter-fill" style={{ width: `${(mechanic.perfection / mechanic.maxPerfection) * 100}%` }} />
-        </div>
-        <p>
-          {mechanic.perfection}/{mechanic.maxPerfection}
-        </p>
+      <div
+        className={`perfection-meter ${rank === "S" ? "is-rank-s" : ""}`}
+        style={{ "--perfection-fill": `${tierProgress}%` } as CSSProperties}
+        aria-label={`Perfection rank ${rank}, ${mechanic.perfection} of ${mechanic.maxPerfection}`}
+        title={`Perfection ${mechanic.perfection}/${mechanic.maxPerfection}`}
+      >
+        <span className="perfection-rank-letter">{rank}</span>
+        <span className="perfection-rank-bonus">{rankBonus}</span>
       </div>
     );
   }
@@ -1538,13 +1612,58 @@ function CharacterMechanicHud({ mechanic }: { mechanic: CharacterMechanicState }
   const stance = stanceRules[mechanic.stance];
 
   return (
-    <div className="stance-meter" style={{ "--stance-color": stance.color } as CSSProperties} aria-label="Stance">
-      <div className="meter-label">
-        <span>Stance</span>
-        <strong>{stance.label}</strong>
+    <div
+      className={`stance-meter stance-meter-${mechanic.stance}`}
+      style={{ "--stance-color": stance.color } as CSSProperties}
+      aria-label={`${stance.label} Stance`}
+    >
+      <div className="stance-emblem" aria-hidden="true">
+        <StanceIcon stance={mechanic.stance} />
       </div>
+      <strong>{mechanic.stance === "offensive" ? "Offense" : stance.label}</strong>
       <p>{stance.helperText}</p>
     </div>
+  );
+}
+
+function StanceIcon({ stance }: { stance: StanceId }) {
+  if (stance === "defensive") {
+    return (
+      <svg viewBox="0 0 64 64" role="img">
+        <path d="M32 6 54 14v15c0 15.5-9.1 25.2-22 31-12.9-5.8-22-15.5-22-31V14L32 6Z" />
+        <path className="stance-icon-highlight" d="M32 12v39c9.1-4.9 15-11.9 15-22.3v-9.8L32 12Z" />
+      </svg>
+    );
+  }
+
+  if (stance === "offensive") {
+    return (
+      <svg viewBox="0 0 64 64" role="img">
+        <path d="M45.6 5.6 54 14 26.8 41.2l-8.4-8.4L45.6 5.6Z" />
+        <path d="M16.7 35.8 28.2 47.3l-5 5-11.5-11.5 5-5Z" />
+        <path className="stance-icon-highlight" d="M10.4 47.1 16.9 40.6 23.4 47.1 16.9 59.2 10.4 47.1Z" />
+        <path d="M34.8 24.2 40.2 18.8 51.2 29.8 45.8 35.2 34.8 24.2Z" />
+      </svg>
+    );
+  }
+
+  if (stance === "virtuoso") {
+    return (
+      <svg viewBox="0 0 64 64" role="img">
+        <path d="M34.2 4.8c5 9.5-2.2 13.7 5.9 22.1 3.5-4 4.5-8.2 3.1-13 9.1 7.6 13 17.2 10.9 26.2C51.7 50.5 43 58 32.2 58 21.6 58 13.6 50.9 12 41.1c-1.5-9.1 3.2-18 11.1-25.3-.4 6.5 1.4 10.6 5.4 13.5 4.5-7.3-.8-14.7 5.7-24.5Z" />
+        <path
+          className="stance-icon-highlight"
+          d="M32.8 29.2c5 5.1 8 9.2 6.8 14.7-.9 4.2-3.8 7.2-7.6 7.2-4.6 0-7.8-3.2-7.8-7.7 0-4.2 2.5-7.5 5.2-10.9 1.2 3 2.2 4.3 4 5.8.9-3.1.3-5.4-.6-9.1Z"
+        />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 64 64" role="img">
+      <circle cx="32" cy="32" r="22" />
+      <circle className="stance-icon-cutout" cx="32" cy="32" r="12" />
+    </svg>
   );
 }
 
@@ -1601,9 +1720,39 @@ function EnemyBattlefieldHud({
   );
 }
 
+function PlayerBattlefieldHud({
+  player,
+  bounds,
+}: {
+  player: CombatState["player"];
+  bounds: DOMRect | null;
+}) {
+  const activeStatuses = getActiveStatusEntries(player.statuses);
+
+  if (!bounds || activeStatuses.length === 0) {
+    return null;
+  }
+
+  const name = characterDefinitions[player.characterId].name;
+
+  return (
+    <div
+      className="player-battlefield-hud"
+      style={{
+        left: bounds.left + bounds.width / 2,
+        top: bounds.top + bounds.height - 70,
+      }}
+      aria-label={`${name} statuses`}
+    >
+      <span className="player-battlefield-hud-name">{name}</span>
+      <StatusChips className="player-battlefield-status-row" label={`${name} statuses`} statuses={activeStatuses} />
+    </div>
+  );
+}
+
 function getEnemyIntentPresentation(enemy: EnemyCombatant) {
   const pattern = attackPatterns[enemy.attackId];
-  const damageParts = pattern.hits.map((hit) => hit.damage);
+  const damageParts = pattern.hits.map((hit) => applyStrengthToDamage(enemy.statuses, hit.damage));
   const allHitsMatch = damageParts.every((damage) => damage === damageParts[0]);
   const damage =
     damageParts.length === 1
@@ -1900,7 +2049,7 @@ function ActorFeedbackOverlay({
           <div className="actor-feedback-shield-shine" />
         </div>
       )}
-      <span>{feedback.text}</span>
+      {feedback.showText && <span>{feedback.text}</span>}
     </div>
   );
 }
@@ -1932,13 +2081,29 @@ function DebugPanel({
   onToggleCollapsed: () => void;
   onToggleTiming: () => void;
 }) {
+  if (collapsed) {
+    return (
+      <aside className="debug-panel is-collapsed" aria-label="Debug controls">
+        <button
+          className="debug-collapsed-button"
+          type="button"
+          aria-label="Show debug controls"
+          title="Show debug controls"
+          onClick={onToggleCollapsed}
+        >
+          <span aria-hidden="true">🐞</span>
+        </button>
+      </aside>
+    );
+  }
+
   return (
-    <aside className={`debug-panel ${collapsed ? "is-collapsed" : ""}`} aria-label="Debug controls">
+    <aside className="debug-panel" aria-label="Debug controls">
       <div className="debug-panel-header">
         <span>Debug</span>
         <div className="debug-header-actions">
           <button type="button" onClick={onToggleCollapsed}>
-            {collapsed ? "Show" : "Hide"}
+            Hide
           </button>
           <button type="button" onClick={onReset}>
             Reset
@@ -2152,6 +2317,7 @@ function StatusChips({
 function CombatCardView({
   card,
   mechanic,
+  statuses,
   selected,
   enemyIsVulnerablePreview,
   disabled,
@@ -2160,6 +2326,7 @@ function CombatCardView({
 }: {
   card: CombatCard;
   mechanic: CharacterMechanicState;
+  statuses: StatusCollection;
   selected: boolean;
   enemyIsVulnerablePreview: boolean;
   disabled: boolean;
@@ -2188,7 +2355,12 @@ function CombatCardView({
         onPlay();
       }}
     >
-      <CombatCardFace definition={definition} mechanic={mechanic} enemyIsVulnerablePreview={enemyIsVulnerablePreview} />
+      <CombatCardFace
+        definition={definition}
+        mechanic={mechanic}
+        statuses={statuses}
+        enemyIsVulnerablePreview={enemyIsVulnerablePreview}
+      />
     </button>
   );
 }
@@ -2196,10 +2368,12 @@ function CombatCardView({
 function FloatingTargetCard({
   card,
   mechanic,
+  statuses,
   pointer,
 }: {
   card: CombatCard;
   mechanic: CharacterMechanicState;
+  statuses: StatusCollection;
   pointer: PointerPoint;
 }) {
   const definition = cardDefinitions[card.definitionId];
@@ -2213,7 +2387,7 @@ function FloatingTargetCard({
       }}
       aria-hidden="true"
     >
-      <CombatCardFace definition={definition} mechanic={mechanic} enemyIsVulnerablePreview={false} />
+      <CombatCardFace definition={definition} mechanic={mechanic} statuses={statuses} enemyIsVulnerablePreview={false} />
     </div>
   );
 }
@@ -2221,10 +2395,12 @@ function FloatingTargetCard({
 function CombatCardFace({
   definition,
   mechanic,
+  statuses,
   enemyIsVulnerablePreview,
 }: {
   definition: CardDefinition;
   mechanic: CharacterMechanicState;
+  statuses: StatusCollection;
   enemyIsVulnerablePreview: boolean;
 }) {
   const keywords = getCardRuleKeywords(definition.rulesText);
@@ -2243,7 +2419,9 @@ function CombatCardFace({
       </span>
       <span className="card-kind">{definition.kind}</span>
       <span className="card-rules">
-        <span className="card-rules-copy">{renderCardRulesText(definition, mechanic, enemyIsVulnerablePreview)}</span>
+        <span className="card-rules-copy">
+          {renderCardRulesText(definition, mechanic, statuses, enemyIsVulnerablePreview)}
+        </span>
       </span>
       {keywords.length > 0 && (
         <span className="card-keyword-tooltip" role="tooltip">

@@ -1,12 +1,18 @@
 import { attackPatterns, getNextAttackId } from "./attackPatterns";
 import { cardDefinitions, getCardPlayBlockReason } from "./cards";
-import { applyCombatEffects } from "./effects";
+import { applyCombatEffects, applyPlayerStrengthDamage } from "./effects";
 import { createEnemyCombatants, getActiveEnemy, getNextLivingEnemyId, updateEnemy } from "./enemies";
-import { clearUntilTurnEndStatuses, hasStatus, removeStatus } from "./statuses";
+import {
+  applyStrengthToDamage,
+  clearUntilTurnEndStatuses,
+  getStatusStacks,
+  hasStatus,
+  removeStatus,
+  setStatusStacks,
+} from "./statuses";
 import { characterDefinitions, createInitialMechanicState } from "../characters/definitions";
-import type { CharacterId } from "../characters/types";
-import { applyPerfectionDamageDealt } from "../characters/perfection";
-import { applyStanceDamageDealt, applyStanceDamageReceived } from "../characters/stances";
+import type { CharacterId, CharacterMechanicState } from "../characters/types";
+import { getPerfectionStrength, losePerfectionRank } from "../characters/perfection";
 import {
   applyCardPlayedRelics,
   applyEnemyAttackCompleteRelics,
@@ -100,6 +106,29 @@ const updateSummary = (
   currentEnemyPhaseSummary: update(state.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(getActiveEnemy(state).intent)),
 });
 
+const syncPerfectionStrengthStatus = (state: CombatState, previousMechanic?: CharacterMechanicState): CombatState => {
+  const previousStrength = previousMechanic ? getPerfectionStrength(previousMechanic) : 0;
+  const nextStrength = getPerfectionStrength(state.player.mechanic);
+  const strengthDelta = nextStrength - previousStrength;
+
+  if (strengthDelta === 0) {
+    return state;
+  }
+
+  return {
+    ...state,
+    player: {
+      ...state.player,
+      statuses: setStatusStacks(
+        state.player.statuses,
+        "strength",
+        getStatusStacks(state.player.statuses, "strength") + strengthDelta,
+        "combat",
+      ),
+    },
+  };
+};
+
 export type CombatSetup = {
   characterId?: CharacterId;
   enemyIds?: EnemyDefinitionId[];
@@ -168,38 +197,18 @@ export const createInitialCombatState = (setup: CharacterId | CombatSetup = "per
   return triggerOpeningTempo(initialState);
 };
 
-const gainPerfection = (state: CombatState, amount: number): CombatState => {
+const loseOnePerfectionRank = (state: CombatState): CombatState => {
   if (state.player.mechanic.type !== "perfection") {
     return state;
   }
 
-  return {
+  return syncPerfectionStrengthStatus({
     ...state,
     player: {
       ...state.player,
-      mechanic: {
-        ...state.player.mechanic,
-        perfection: clamp(state.player.mechanic.perfection + amount, 0, state.player.mechanic.maxPerfection),
-      },
+      mechanic: losePerfectionRank(state.player.mechanic),
     },
-  };
-};
-
-const losePerfection = (state: CombatState, amount: number): CombatState => {
-  if (state.player.mechanic.type !== "perfection") {
-    return state;
-  }
-
-  return {
-    ...state,
-    player: {
-      ...state.player,
-      mechanic: {
-        ...state.player.mechanic,
-        perfection: clamp(state.player.mechanic.perfection - amount, 0, state.player.mechanic.maxPerfection),
-      },
-    },
-  };
+  }, state.player.mechanic);
 };
 
 export const getReactionTimingModifiers = (state: CombatState): { parryWindowBonusMs: number; dodgeWindowBonusMs: number } => {
@@ -215,7 +224,8 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
   const labelPrefix = hitLabel ? `${hitLabel}: ` : "";
   const isParry = result === "PARRY_PERFECT" || result === "PARRY_NORMAL";
   const activeEnemy = getActiveEnemy(state);
-  const baseRiposteDamage = applyPerfectionDamageDealt(state.player.mechanic, applyStanceDamageDealt(state, 3));
+  const incomingDamage = applyStrengthToDamage(activeEnemy.statuses, damage);
+  const baseRiposteDamage = applyPlayerStrengthDamage(state, 3);
   const riposteDamage = hasStatus(activeEnemy.statuses, "vulnerable")
     ? Math.round(baseRiposteDamage * 1.5)
     : baseRiposteDamage;
@@ -237,8 +247,7 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
   }
 
   if (isParry) {
-    const perfectionGain = result === "PARRY_PERFECT" ? 10 : 5;
-    const parryLog = result === "PARRY_PERFECT" ? "Perfect parry. Perfection rises." : "Parry. The rhythm holds.";
+    const parryLog = result === "PARRY_PERFECT" ? "Perfect parry." : "Parry. The rhythm holds.";
     let nextState: CombatState = {
       ...state,
       ...updateSummary(state, (summary) => ({
@@ -248,7 +257,6 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
       })),
       log: appendLog(state, `${labelPrefix}${parryLog}`),
     };
-    nextState = gainPerfection(nextState, perfectionGain);
 
     if (hasStatus(state.player.statuses, "riposte-prep")) {
       const nextHp = clamp(activeEnemy.hp - riposteDamage, 0, activeEnemy.maxHp);
@@ -291,9 +299,8 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
     return nextState;
   }
 
-  const baseDamage = applyStanceDamageReceived(state, damage);
-  const blockDamage = Math.min(state.player.block, baseDamage);
-  const hpDamage = baseDamage - blockDamage;
+  const blockDamage = Math.min(state.player.block, incomingDamage);
+  const hpDamage = incomingDamage - blockDamage;
   const nextHp = clamp(state.player.hp - hpDamage, 0, state.player.maxHp);
   const currentSummary = state.currentEnemyPhaseSummary ?? createEnemyPhaseSummary(activeEnemy.intent);
   const nextSummary = {
@@ -304,7 +311,7 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
     blockPrevented: currentSummary.blockPrevented + blockDamage,
   };
 
-  return losePerfection({
+  return loseOnePerfectionRank({
     ...state,
     phase: nextHp <= 0 ? "lost" : state.phase,
     currentEnemyPhaseSummary: nextHp <= 0 ? null : nextSummary,
@@ -318,7 +325,7 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
       state,
       `${labelPrefix}${result === "REACTION_FAILED" ? "Mistimed reaction" : "Hit taken"} for ${hpDamage} HP.`,
     ),
-  }, 20);
+  });
 };
 
 export const combatReducer = (state: CombatState, action: CombatAction): CombatState => {

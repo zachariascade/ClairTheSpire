@@ -3,34 +3,34 @@ import type { StanceId } from "./types";
 
 export const stanceRules: Record<
   StanceId,
-  { label: string; helperText: string; damageDealt: number; damageReceived: number; color: string }
+  { label: string; helperText: string; strength: number; dexterity: number; color: string }
 > = {
   neutral: {
     label: "Neutral",
-    helperText: "No buff.",
-    damageDealt: 1,
-    damageReceived: 1,
+    helperText: "No bonus.",
+    strength: 0,
+    dexterity: 0,
     color: "#a8abb2",
   },
   offensive: {
     label: "Offensive",
-    helperText: "Deal 1.25x damage. Receive 1.25x damage.",
-    damageDealt: 1.25,
-    damageReceived: 1.25,
+    helperText: "+3 Strength. -3 Dexterity.",
+    strength: 3,
+    dexterity: -3,
     color: "#e25d5d",
   },
   virtuoso: {
     label: "Virtuoso",
-    helperText: "Deal 1.5x damage.",
-    damageDealt: 1.5,
-    damageReceived: 1,
+    helperText: "+5 Strength. +5 Dexterity.",
+    strength: 5,
+    dexterity: 5,
     color: "#b278ff",
   },
   defensive: {
     label: "Defensive",
-    helperText: "Deal 0.75x damage. Receive 0.75x damage.",
-    damageDealt: 0.75,
-    damageReceived: 0.75,
+    helperText: "+3 Dexterity. -3 Strength.",
+    strength: -3,
+    dexterity: 3,
     color: "#6fa8ff",
   },
 };
@@ -40,14 +40,14 @@ export const stanceOrder: StanceId[] = ["neutral", "offensive", "virtuoso", "def
 export const getCurrentStance = (state: CombatState): StanceId | null =>
   state.player.mechanic.type === "stance" ? state.player.mechanic.stance : null;
 
-export const applyStanceDamageDealt = (state: CombatState, damage: number): number => {
+export const getStanceStrength = (state: CombatState): number => {
   const stance = getCurrentStance(state);
 
-  return Math.round(damage * (stance ? stanceRules[stance].damageDealt : 1));
+  return stance ? stanceRules[stance].strength : 0;
 };
 
-export const applyStanceDamageReceived = (state: CombatState, damage: number): number => {
+export const getStanceDexterity = (state: CombatState): number => {
   const stance = getCurrentStance(state);
 
-  return Math.round(damage * (stance ? stanceRules[stance].damageReceived : 1));
+  return stance ? stanceRules[stance].dexterity : 0;
 };

@@ -22,7 +22,7 @@ export const characterDefinitions: Record<CharacterId, CharacterDefinition> = {
     ],
     mechanics: {
       type: "perfection",
-      maxPerfection: 100,
+      maxPerfection: 9,
     },
   },
   fencer: {

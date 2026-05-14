@@ -17,6 +17,10 @@ type EnemyActorTarget = {
   actor: Phaser.GameObjects.Container;
   home: { x: number; y: number };
 };
+type AttackTimelineStep = {
+  atMs: number;
+  run: (attacker: EnemyActorTarget) => void;
+};
 
 export type BattleSceneEvents = {
   onAttackComplete: () => void;
@@ -24,6 +28,8 @@ export type BattleSceneEvents = {
   onAttackStarted: (startedAt: number) => void;
   onEnemyBoundsChange: (bounds: DOMRect) => void;
   onEnemyBoundsListChange: (bounds: Record<string, DOMRect>) => void;
+  onEnemyTargetHover: (enemyId: string | null) => void;
+  onEnemyTargetSelect: (enemyId: string) => void;
   onPlayerBoundsChange: (bounds: DOMRect) => void;
   onReactionResolved: (event: {
     hit: AttackHit;
@@ -44,6 +50,7 @@ type SceneData = BattleSceneEvents & {
 
 const BATTLEFIELD_BACKGROUND_KEY = "battlefield-background";
 const PLAYER_SPRITE_KEY = "gutz-player";
+const FX_PARTICLE_KEY = "fx-particle";
 const publicAssetPath = (filename: string) => `${import.meta.env.BASE_URL}${filename}`;
 const getEnemySpriteKey = (image: string) => `enemy-sprite-${image}`;
 const ACTOR_SPRITE_MAX_WIDTH = 220;
@@ -82,6 +89,9 @@ export class BattleScene extends Phaser.Scene {
   private sceneReady = false;
   private attackRunning = false;
   private attackStartedAt: number | null = null;
+  private enemyTargetingEnabled = false;
+  private hoveredEnemyTargetId: string | null = null;
+  private reactionKeyHandler?: (event: KeyboardEvent) => void;
   private parryReadyAt = 0;
   private dodgeReadyAt = 0;
   private resolvedHitIndexes = new Set<number>();
@@ -114,6 +124,7 @@ export class BattleScene extends Phaser.Scene {
   create() {
     const { width, height } = this.scale;
     this.cameras.main.setBackgroundColor("#020914");
+    this.createParticleTexture();
     this.setTextureSmoothing();
 
     this.background = this.add.image(width / 2, height / 2, BATTLEFIELD_BACKGROUND_KEY);
@@ -132,9 +143,10 @@ export class BattleScene extends Phaser.Scene {
     this.syncEnemyFormation();
     this.eventsBridge.onSceneReady(this);
 
-    this.input.keyboard?.on("keydown-A", () => this.resolveReactionInput("parry"));
-    this.input.keyboard?.on("keydown-S", () => this.resolveReactionInput("dodge"));
-    this.input.keyboard?.on("keydown-D", () => this.resolveReactionInput("miss"));
+    this.input.keyboard?.on("keydown-A", () => this.handleReactionInput("parry"));
+    this.input.keyboard?.on("keydown-S", () => this.handleReactionInput("dodge"));
+    this.input.keyboard?.on("keydown-D", () => this.handleReactionInput("miss"));
+    this.installReactionKeyHandler();
     this.publishActorBounds();
     this.scale.on("resize", this.handleResize, this);
   }
@@ -202,6 +214,53 @@ export class BattleScene extends Phaser.Scene {
     this.parryWindowBonusMs = modifiers.parryWindowBonusMs;
   }
 
+  private installReactionKeyHandler() {
+    this.reactionKeyHandler = (event: KeyboardEvent) => {
+      if (event.repeat || event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+
+      const key = event.key.toLowerCase();
+      if (key === "a") {
+        this.handleReactionInput("parry");
+        return;
+      }
+
+      if (key === "s") {
+        this.handleReactionInput("dodge");
+        return;
+      }
+
+      if (key === "d") {
+        this.handleReactionInput("miss");
+      }
+    };
+
+    window.addEventListener("keydown", this.reactionKeyHandler, { capture: true });
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.removeReactionKeyHandler, this);
+    this.events.once(Phaser.Scenes.Events.DESTROY, this.removeReactionKeyHandler, this);
+  }
+
+  private removeReactionKeyHandler() {
+    if (!this.reactionKeyHandler) {
+      return;
+    }
+
+    window.removeEventListener("keydown", this.reactionKeyHandler, { capture: true });
+    this.reactionKeyHandler = undefined;
+  }
+
+  setEnemyTargetingEnabled(enabled: boolean) {
+    this.enemyTargetingEnabled = enabled;
+    if (!enabled) {
+      this.setHoveredEnemyTarget(null);
+      this.input.setDefaultCursor("default");
+      return;
+    }
+
+    this.syncHoveredEnemyTargetFromPointer();
+  }
+
   flashEnemy(enemyId?: string) {
     const { actor, home } = this.getEnemyActorTarget(enemyId);
 
@@ -211,6 +270,7 @@ export class BattleScene extends Phaser.Scene {
     actor.setScale(1);
     this.showActorWash("enemy", 0xf07a6a);
     this.showImpactBurst(actor.x - 18, actor.y - 64, 0xf07a6a);
+    this.emitSlashTrail(actor.x - 58, actor.y - 108, actor.x + 24, actor.y - 40, 0xf07a6a);
 
     this.tweens.add({
       targets: actor,
@@ -243,6 +303,13 @@ export class BattleScene extends Phaser.Scene {
     this.player.setAlpha(1);
     this.player.setPosition(this.playerHome.x, this.playerHome.y);
     this.showActorWash("player", 0xf07a6a);
+    this.emitParticleBurst(this.player.x + 14, this.player.y - 58, 0xf07a6a, {
+      count: 24,
+      gravityY: 420,
+      lifespan: 380,
+      scale: { start: 1.2, end: 0 },
+      speed: { min: 90, max: 260 },
+    });
 
     this.tweens.add({
       targets: this.player,
@@ -271,6 +338,7 @@ export class BattleScene extends Phaser.Scene {
     this.player.setAlpha(1);
     this.player.setPosition(this.playerHome.x, this.playerHome.y);
     this.showDodgeAfterimage();
+    this.emitDodgeDust(this.playerHome.x - 18, this.playerHome.y + 52);
 
     this.tweens.add({
       targets: this.player,
@@ -310,6 +378,7 @@ export class BattleScene extends Phaser.Scene {
     this.player.setAlpha(1);
     this.player.setPosition(this.playerHome.x, this.playerHome.y);
     this.showParryAfterimage();
+    this.emitGuardBurst(this.playerHome.x + 40, this.playerHome.y - 62, 0xfff3bd);
 
     this.tweens.add({
       targets: this.player,
@@ -401,6 +470,7 @@ export class BattleScene extends Phaser.Scene {
         card.destroy();
         this.flashEnemy(enemyId);
         this.showImpactBurst(actor.x - 26, actor.y - 62, 0xf5cf72);
+        this.emitSlashTrail(this.player.x + 70, this.player.y - 96, actor.x - 30, actor.y - 58, 0xf5cf72);
       },
     });
   }
@@ -504,7 +574,9 @@ export class BattleScene extends Phaser.Scene {
     while (this.enemies.length < this.enemyCount) {
       const index = this.enemies.length;
       const home = this.enemyHomes[index];
-      this.enemies.push(this.createEnemyActor(home.x, home.y, index));
+      const enemy = this.createEnemyActor(home.x, home.y, index);
+      this.configureEnemyTargeting(enemy, index);
+      this.enemies.push(enemy);
     }
 
     while (this.enemies.length > this.enemyCount) {
@@ -518,6 +590,7 @@ export class BattleScene extends Phaser.Scene {
       enemy.setScale(1);
       enemy.setAlpha(1);
       enemy.setDepth(index === this.activeEnemyIndex ? 4 : 2);
+      this.configureEnemyTargeting(enemy, index);
       this.syncEnemyHealthHud(this.enemyStates[index], index, index === this.activeEnemyIndex);
     });
 
@@ -558,6 +631,87 @@ export class BattleScene extends Phaser.Scene {
     }
   }
 
+  private configureEnemyTargeting(enemy: Phaser.GameObjects.Container, index: number) {
+    enemy.removeAllListeners("pointerover");
+    enemy.removeAllListeners("pointerout");
+    enemy.removeAllListeners("pointerdown");
+
+    const enemyId = this.enemyStates[index]?.id;
+    if (!enemyId) {
+      enemy.disableInteractive();
+      return;
+    }
+
+    enemy.setInteractive(
+      new Phaser.Geom.Rectangle(
+        -ACTOR_BOUNDS_WIDTH / 2,
+        -ACTOR_BOUNDS_HEIGHT / 2 - 10,
+        ACTOR_BOUNDS_WIDTH,
+        ACTOR_BOUNDS_HEIGHT,
+      ),
+      Phaser.Geom.Rectangle.Contains,
+    );
+
+    enemy.on("pointerover", () => {
+      if (!this.canTargetEnemy(index)) {
+        return;
+      }
+
+      this.input.setDefaultCursor("pointer");
+      this.setHoveredEnemyTarget(enemyId);
+    });
+
+    enemy.on("pointerout", () => {
+      if (this.hoveredEnemyTargetId === enemyId) {
+        this.setHoveredEnemyTarget(null);
+      }
+      this.input.setDefaultCursor("default");
+    });
+
+    enemy.on("pointerdown", () => {
+      if (!this.canTargetEnemy(index)) {
+        return;
+      }
+
+      this.eventsBridge.onEnemyTargetSelect(enemyId);
+    });
+  }
+
+  private canTargetEnemy(index: number) {
+    return this.enemyTargetingEnabled && this.phase === "playerTurn" && (this.enemyStates[index]?.hp ?? 0) > 0;
+  }
+
+  private syncHoveredEnemyTargetFromPointer() {
+    const pointer = this.input.activePointer;
+    const hoveredIndex = this.enemies.findIndex((enemy, index) => {
+      if (!this.canTargetEnemy(index)) {
+        return false;
+      }
+
+      const localX = pointer.worldX - enemy.x;
+      const localY = pointer.worldY - enemy.y;
+      return (
+        localX >= -ACTOR_BOUNDS_WIDTH / 2 &&
+        localX <= ACTOR_BOUNDS_WIDTH / 2 &&
+        localY >= -ACTOR_BOUNDS_HEIGHT / 2 - 10 &&
+        localY <= ACTOR_BOUNDS_HEIGHT / 2 - 10
+      );
+    });
+
+    const hoveredEnemyId = hoveredIndex >= 0 ? this.enemyStates[hoveredIndex]?.id ?? null : null;
+    this.setHoveredEnemyTarget(hoveredEnemyId);
+    this.input.setDefaultCursor(hoveredEnemyId ? "pointer" : "default");
+  }
+
+  private setHoveredEnemyTarget(enemyId: string | null) {
+    if (this.hoveredEnemyTargetId === enemyId) {
+      return;
+    }
+
+    this.hoveredEnemyTargetId = enemyId;
+    this.eventsBridge.onEnemyTargetHover(enemyId);
+  }
+
   private getEnemyActorTarget(enemyId?: string) {
     const targetEnemyId = enemyId ?? this.activeEnemyId;
     const index = targetEnemyId ? this.enemyStates.findIndex((enemy) => enemy.id === targetEnemyId) : this.activeEnemyIndex;
@@ -592,6 +746,18 @@ export class BattleScene extends Phaser.Scene {
     const texture = sprite.texture.getSourceImage() as HTMLImageElement;
     const scale = Math.min(maxWidth / texture.width, maxHeight / texture.height);
     sprite.setScale(scale);
+  }
+
+  private createParticleTexture() {
+    if (this.textures.exists(FX_PARTICLE_KEY)) {
+      return;
+    }
+
+    const graphics = this.make.graphics({ x: 0, y: 0 }, false);
+    graphics.fillStyle(0xffffff, 1);
+    graphics.fillCircle(5, 5, 5);
+    graphics.generateTexture(FX_PARTICLE_KEY, 10, 10);
+    graphics.destroy();
   }
 
   private runAttack(pattern: AttackPattern) {
@@ -655,6 +821,18 @@ export class BattleScene extends Phaser.Scene {
     this.attackResolutionTimers.push(this.time.delayedCall(getAttackDuration(pattern) + PLAYER_TURN_AFTER_ENEMY_PAUSE_MS, () => {
       this.eventsBridge.onAttackComplete();
     }));
+  }
+
+  private handleReactionInput(input: ReactionInput) {
+    if (input === "parry") {
+      this.parryPlayer();
+    }
+
+    if (input === "dodge") {
+      this.dodgePlayer();
+    }
+
+    this.resolveReactionInput(input);
   }
 
   private resolveReactionInput(input: ReactionInput) {
@@ -731,143 +909,211 @@ export class BattleScene extends Phaser.Scene {
     return clamp(((performance.now() - this.attackStartedAt) / getAttackDuration(pattern)) * 100, 0, 100);
   }
 
+  private playAttackTimeline(attacker: EnemyActorTarget, steps: AttackTimelineStep[]) {
+    for (const step of steps) {
+      if (step.atMs <= 0) {
+        step.run(attacker);
+        continue;
+      }
+
+      this.attackVisualTimers.push(this.time.delayedCall(step.atMs, () => step.run(attacker)));
+    }
+  }
+
+  private createHitVisualSteps(atMs: number, angle: number, shakeMs: number): AttackTimelineStep[] {
+    return [
+      {
+        atMs: Math.max(0, atMs - 140),
+        run: (attacker) => {
+          this.pulseActor(attacker.actor, 1.04, 95);
+        },
+      },
+      {
+        atMs,
+        run: (attacker) => {
+          this.tweenWeapon({ angle, scaleY: 1, duration: 150, ease: "Quad.easeIn" });
+          this.tweens.add({
+            targets: attacker.actor,
+            x: attacker.home.x,
+            y: attacker.home.y,
+            scaleX: 1,
+            scaleY: 1,
+            duration: 150,
+            ease: "Back.easeOut",
+          });
+          this.showImpactBurst(this.player.x + 20, this.player.y - 58, 0xf7dca2);
+          this.emitSlashTrail(attacker.actor.x - 38, attacker.actor.y - 114, this.player.x + 28, this.player.y - 58, 0xf7dca2);
+          this.cameras.main.shake(shakeMs, 0.004);
+        },
+      },
+    ];
+  }
+
   private runQuickSlashVisual(pattern: AttackPattern, attacker: EnemyActorTarget) {
-    this.resetEnemyPose(attacker);
-    this.tweenWeapon({ angle: -42, duration: pattern.hits[0].atMs, ease: "Sine.easeOut" });
-
-    this.tweens.add({
-      targets: attacker.actor,
-      x: attacker.home.x - 58,
-      scaleX: 1.08,
-      duration: Math.max(120, pattern.hits[0].atMs - 80),
-      ease: "Sine.easeInOut",
-    });
-
-    this.queueHitVisual(attacker, pattern.hits[0].atMs, 64, 100);
+    const hit = pattern.hits[0];
+    this.playAttackTimeline(attacker, [
+      {
+        atMs: 0,
+        run: (target) => {
+          this.resetEnemyPose(target);
+          this.tweenWeapon({ angle: -42, duration: hit.atMs, ease: "Sine.easeOut" });
+          this.tweens.add({
+            targets: target.actor,
+            x: target.home.x - 58,
+            scaleX: 1.08,
+            duration: Math.max(120, hit.atMs - 80),
+            ease: "Sine.easeInOut",
+          });
+        },
+      },
+      ...this.createHitVisualSteps(hit.atMs, 64, 100),
+    ]);
   }
 
   private runHeavyOverheadVisual(pattern: AttackPattern, attacker: EnemyActorTarget) {
-    this.resetEnemyPose(attacker);
-    attacker.actor.setScale(1.06);
-    this.tweenWeapon({
-      angle: -86,
-      scaleY: 1.18,
-      duration: pattern.hits[0].atMs,
-      ease: "Sine.easeInOut",
-    });
-
-    this.tweens.add({
-      targets: attacker.actor,
-      y: attacker.home.y - 34,
-      scaleY: 1.13,
-      duration: Math.max(160, pattern.hits[0].atMs - 120),
-      ease: "Sine.easeInOut",
-    });
-
-    this.queueHitVisual(attacker, pattern.hits[0].atMs, 86, 170);
+    const hit = pattern.hits[0];
+    this.playAttackTimeline(attacker, [
+      {
+        atMs: 0,
+        run: (target) => {
+          this.resetEnemyPose(target);
+          target.actor.setScale(1.06);
+          this.tweenWeapon({
+            angle: -86,
+            scaleY: 1.18,
+            duration: hit.atMs,
+            ease: "Sine.easeInOut",
+          });
+          this.tweens.add({
+            targets: target.actor,
+            y: target.home.y - 34,
+            scaleY: 1.13,
+            duration: Math.max(160, hit.atMs - 120),
+            ease: "Sine.easeInOut",
+          });
+        },
+      },
+      ...this.createHitVisualSteps(hit.atMs, 86, 170),
+    ]);
   }
 
   private runThreeHitComboVisual(pattern: AttackPattern, attacker: EnemyActorTarget) {
-    this.resetEnemyPose(attacker);
     const angles = [52, -56, 70];
+    const steps: AttackTimelineStep[] = [
+      {
+        atMs: 0,
+        run: (target) => this.resetEnemyPose(target),
+      },
+    ];
+
     for (const [index, hit] of pattern.hits.entries()) {
-      this.attackVisualTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 220), () => {
-        this.tweenWeapon({ angle: -angles[index], duration: 180, ease: "Sine.easeOut" });
-        this.tweens.add({
-          targets: attacker.actor,
-          x: attacker.home.x - (index % 2 === 0 ? 42 : 18),
-          y: attacker.home.y + (index === 1 ? -14 : 0),
-          duration: 140,
-          ease: "Sine.easeOut",
-        });
-      }));
-      this.queueHitVisual(attacker, hit.atMs, angles[index], index === 2 ? 140 : 80);
+      steps.push({
+        atMs: Math.max(0, hit.atMs - 220),
+        run: (target) => {
+          this.tweenWeapon({ angle: -angles[index], duration: 180, ease: "Sine.easeOut" });
+          this.tweens.add({
+            targets: target.actor,
+            x: target.home.x - (index % 2 === 0 ? 42 : 18),
+            y: target.home.y + (index === 1 ? -14 : 0),
+            duration: 140,
+            ease: "Sine.easeOut",
+          });
+        },
+      });
+      steps.push(...this.createHitVisualSteps(hit.atMs, angles[index], index === 2 ? 140 : 80));
     }
+
+    this.playAttackTimeline(attacker, steps);
   }
 
   private runOrbitalLaserVisual(pattern: AttackPattern, attacker: EnemyActorTarget) {
-    this.resetEnemyPose(attacker);
-    this.tweenWeapon({ angle: -18, scaleY: 0.92, duration: 260, ease: "Sine.easeOut" });
+    const steps: AttackTimelineStep[] = [
+      {
+        atMs: 0,
+        run: (target) => {
+          this.resetEnemyPose(target);
+          this.tweenWeapon({ angle: -18, scaleY: 0.92, duration: 260, ease: "Sine.easeOut" });
+        },
+      },
+    ];
 
     for (const [index, hit] of pattern.hits.entries()) {
-      this.attackVisualTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 280), () => {
-        const turn = (index / pattern.hits.length) * Math.PI * 2 - Math.PI / 2;
-        this.pulseActor(attacker.actor, 1.035, 120);
-        this.showImpactBurst(
-          attacker.home.x + Math.cos(turn) * 172,
-          attacker.home.y - 78 + Math.sin(turn) * 172,
-          0xf5cf72,
-        );
-      }));
+      steps.push({
+        atMs: Math.max(0, hit.atMs - 280),
+        run: (target) => {
+          const turn = (index / pattern.hits.length) * Math.PI * 2 - Math.PI / 2;
+          this.pulseActor(target.actor, 1.035, 120);
+          this.showImpactBurst(
+            target.home.x + Math.cos(turn) * 172,
+            target.home.y - 78 + Math.sin(turn) * 172,
+            0xf5cf72,
+          );
+        },
+      });
 
-      this.attackVisualTimers.push(this.time.delayedCall(hit.atMs, () => {
-        this.showImpactBurst(this.player.x + 20, this.player.y - 58, 0xfff3bd);
-        this.cameras.main.shake(index === pattern.hits.length - 1 ? 130 : 72, 0.0035);
-      }));
+      steps.push({
+        atMs: hit.atMs,
+        run: () => {
+          this.showImpactBurst(this.player.x + 20, this.player.y - 58, 0xfff3bd);
+          this.cameras.main.shake(index === pattern.hits.length - 1 ? 130 : 72, 0.0035);
+        },
+      });
     }
+
+    this.playAttackTimeline(attacker, steps);
   }
 
   private runShieldBreakerVisual(pattern: AttackPattern, attacker: EnemyActorTarget) {
-    this.resetEnemyPose(attacker);
     const hit = pattern.hits[0];
 
-    attacker.actor.setScale(1.04);
-    this.tweenWeapon({
-      angle: -104,
-      scaleY: 1.28,
-      duration: Math.max(220, hit.atMs - 220),
-      ease: "Sine.easeInOut",
-    });
-
-    this.tweens.add({
-      targets: attacker.actor,
-      y: attacker.home.y - 22,
-      scaleX: 1.1,
-      scaleY: 1.12,
-      duration: Math.max(180, hit.atMs - 180),
-      ease: "Sine.easeInOut",
-    });
-
-    this.attackVisualTimers.push(this.time.delayedCall(Math.max(0, hit.atMs - 360), () => {
-      this.showImpactBurst(attacker.home.x - 16, attacker.home.y - 112, 0x8fa0de);
-      this.pulseActor(attacker.actor, 1.08, 160);
-    }));
-
-    this.attackVisualTimers.push(this.time.delayedCall(hit.atMs, () => {
-      this.tweenWeapon({ angle: 92, scaleY: 1, duration: 160, ease: "Quad.easeIn" });
-      this.tweens.add({
-        targets: attacker.actor,
-        x: attacker.home.x,
-        y: attacker.home.y,
-        scaleX: 1,
-        scaleY: 1,
-        duration: 170,
-        ease: "Back.easeOut",
-      });
-      this.showImpactBurst(this.player.x + 20, this.player.y - 58, 0x8fa0de);
-      this.cameras.main.shake(190, 0.005);
-    }));
-  }
-
-  private queueHitVisual(attacker: EnemyActorTarget, atMs: number, angle: number, shakeMs: number) {
-    this.attackVisualTimers.push(this.time.delayedCall(Math.max(0, atMs - 140), () => {
-      this.pulseActor(attacker.actor, 1.04, 95);
-    }));
-
-    this.attackVisualTimers.push(this.time.delayedCall(atMs, () => {
-      this.tweenWeapon({ angle, scaleY: 1, duration: 150, ease: "Quad.easeIn" });
-      this.tweens.add({
-        targets: attacker.actor,
-        x: attacker.home.x,
-        y: attacker.home.y,
-        scaleX: 1,
-        scaleY: 1,
-        duration: 150,
-        ease: "Back.easeOut",
-      });
-      this.showImpactBurst(this.player.x + 20, this.player.y - 58, 0xf7dca2);
-      this.cameras.main.shake(shakeMs, 0.004);
-    }));
+    this.playAttackTimeline(attacker, [
+      {
+        atMs: 0,
+        run: (target) => {
+          this.resetEnemyPose(target);
+          target.actor.setScale(1.04);
+          this.tweenWeapon({
+            angle: -104,
+            scaleY: 1.28,
+            duration: Math.max(220, hit.atMs - 220),
+            ease: "Sine.easeInOut",
+          });
+          this.tweens.add({
+            targets: target.actor,
+            y: target.home.y - 22,
+            scaleX: 1.1,
+            scaleY: 1.12,
+            duration: Math.max(180, hit.atMs - 180),
+            ease: "Sine.easeInOut",
+          });
+        },
+      },
+      {
+        atMs: Math.max(0, hit.atMs - 360),
+        run: (target) => {
+          this.showImpactBurst(target.home.x - 16, target.home.y - 112, 0x8fa0de);
+          this.pulseActor(target.actor, 1.08, 160);
+        },
+      },
+      {
+        atMs: hit.atMs,
+        run: (target) => {
+          this.tweenWeapon({ angle: 92, scaleY: 1, duration: 160, ease: "Quad.easeIn" });
+          this.tweens.add({
+            targets: target.actor,
+            x: target.home.x,
+            y: target.home.y,
+            scaleX: 1,
+            scaleY: 1,
+            duration: 170,
+            ease: "Back.easeOut",
+          });
+          this.showImpactBurst(this.player.x + 20, this.player.y - 58, 0x8fa0de);
+          this.emitGuardBurst(this.player.x + 20, this.player.y - 58, 0x8fa0de);
+          this.cameras.main.shake(190, 0.005);
+        },
+      },
+    ]);
   }
 
   private completeEnemyAttack() {
@@ -945,6 +1191,9 @@ export class BattleScene extends Phaser.Scene {
       ease: "Back.easeOut",
     });
     this.showImpactBurst(this.player.x + 20, this.player.y - 60, tone === "good" ? 0x9fe2b1 : tone === "bad" ? 0xf07a6a : 0xf7dca2);
+    if (tone === "good") {
+      this.emitGuardBurst(this.player.x + 20, this.player.y - 60, 0x9fe2b1);
+    }
     this.time.delayedCall(220, () => {
       if (this.attackCue) {
         this.attackCue.setText(attackPatterns[this.attackId].name);
@@ -968,6 +1217,13 @@ export class BattleScene extends Phaser.Scene {
     const burst = this.add.circle(x, y, 12, color, 0.12);
     burst.setStrokeStyle(3, color, 0.88);
     burst.setDepth(10);
+    this.emitParticleBurst(x, y, color, {
+      count: 30,
+      gravityY: 300,
+      lifespan: 420,
+      scale: { start: 1.15, end: 0 },
+      speed: { min: 110, max: 310 },
+    });
     this.tweens.add({
       targets: burst,
       scale: 2.6,
@@ -991,6 +1247,101 @@ export class BattleScene extends Phaser.Scene {
       duration: 190,
       ease: "Quad.easeOut",
       onComplete: () => wash.destroy(),
+    });
+  }
+
+  private emitParticleBurst(
+    x: number,
+    y: number,
+    color: number,
+    config: {
+      count: number;
+      gravityY?: number;
+      lifespan: number;
+      scale: { start: number; end: number };
+      speed: { min: number; max: number };
+    },
+  ) {
+    const emitter = this.add.particles(x, y, FX_PARTICLE_KEY, {
+      alpha: { start: 0.95, end: 0 },
+      blendMode: Phaser.BlendModes.ADD,
+      emitting: false,
+      gravityY: config.gravityY ?? 0,
+      lifespan: config.lifespan,
+      scale: config.scale,
+      speed: config.speed,
+      tint: color,
+    });
+
+    emitter.setDepth(13);
+    emitter.explode(config.count, x, y);
+    this.time.delayedCall(config.lifespan + 80, () => emitter.destroy());
+  }
+
+  private emitGuardBurst(x: number, y: number, color: number) {
+    this.emitParticleBurst(x, y, color, {
+      count: 36,
+      lifespan: 360,
+      scale: { start: 1.05, end: 0 },
+      speed: { min: 150, max: 360 },
+    });
+
+    const ring = this.add.circle(x, y, 20, color, 0.06);
+    ring.setStrokeStyle(3, color, 0.9);
+    ring.setDepth(12);
+    ring.setBlendMode(Phaser.BlendModes.ADD);
+    this.tweens.add({
+      targets: ring,
+      alpha: 0,
+      scale: 2.4,
+      duration: 260,
+      ease: "Quad.easeOut",
+      onComplete: () => ring.destroy(),
+    });
+  }
+
+  private emitDodgeDust(x: number, y: number) {
+    const emitter = this.add.particles(x, y, FX_PARTICLE_KEY, {
+      alpha: { start: 0.58, end: 0 },
+      angle: { min: 185, max: 355 },
+      blendMode: Phaser.BlendModes.ADD,
+      emitting: false,
+      gravityY: -40,
+      lifespan: 520,
+      scale: { start: 1.25, end: 0.1 },
+      speed: { min: 40, max: 170 },
+      tint: 0x9fe2ff,
+    });
+
+    emitter.setDepth(2);
+    emitter.explode(34, x, y);
+    this.time.delayedCall(620, () => emitter.destroy());
+  }
+
+  private emitSlashTrail(startX: number, startY: number, endX: number, endY: number, color: number) {
+    const midpointX = (startX + endX) / 2;
+    const midpointY = (startY + endY) / 2;
+    const angle = Phaser.Math.RadToDeg(Math.atan2(endY - startY, endX - startX));
+    const length = Math.hypot(endX - startX, endY - startY);
+    const slash = this.add.rectangle(midpointX, midpointY, length, 9, color, 0.42);
+
+    slash.setAngle(angle);
+    slash.setDepth(12);
+    slash.setBlendMode(Phaser.BlendModes.ADD);
+    this.emitParticleBurst(endX, endY, color, {
+      count: 18,
+      gravityY: 180,
+      lifespan: 320,
+      scale: { start: 0.95, end: 0 },
+      speed: { min: 90, max: 250 },
+    });
+    this.tweens.add({
+      targets: slash,
+      alpha: 0,
+      scaleX: 0.28,
+      duration: 180,
+      ease: "Quad.easeOut",
+      onComplete: () => slash.destroy(),
     });
   }
 

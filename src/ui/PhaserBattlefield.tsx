@@ -19,6 +19,7 @@ export type PhaserBattlefieldHandle = {
     enemyId?: string,
   ) => void;
   showReactionLabel: (label: string, tone?: "good" | "bad" | "neutral") => void;
+  setEnemyTargetingEnabled: (enabled: boolean) => void;
   setReactionTimingModifiers: (modifiers: { dodgeWindowBonusMs: number; parryWindowBonusMs: number }) => void;
   updateEnemyHud: (enemy: Pick<EnemyCombatant, "id" | "image" | "hp" | "maxHp">) => void;
 };
@@ -30,12 +31,15 @@ type PhaserBattlefieldProps = {
   playerSpritePath: string;
   enemies: EnemyCombatant[];
   activeEnemyId: string;
+  enemyTargetingEnabled: boolean;
   reactionTimingModifiers: { dodgeWindowBonusMs: number; parryWindowBonusMs: number };
   onAttackComplete: () => void;
   onAttackImpact: (event: { hit: AttackHit; hitIndex: number }) => void;
   onAttackStarted: (startedAt: number) => void;
   onEnemyBoundsChange: (bounds: DOMRect) => void;
   onEnemyBoundsListChange: (bounds: Record<string, DOMRect>) => void;
+  onEnemyTargetHover: (enemyId: string | null) => void;
+  onEnemyTargetSelect: (enemyId: string) => void;
   onPlayerBoundsChange: (bounds: DOMRect) => void;
   onReactionResolved: (event: {
     hit: AttackHit;
@@ -55,12 +59,15 @@ export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattl
       playerSpritePath,
       enemies,
       activeEnemyId,
+      enemyTargetingEnabled,
       reactionTimingModifiers,
       onAttackComplete,
       onAttackImpact,
       onAttackStarted,
       onEnemyBoundsChange,
       onEnemyBoundsListChange,
+      onEnemyTargetHover,
+      onEnemyTargetSelect,
       onPlayerBoundsChange,
       onReactionResolved,
       onTimingInput,
@@ -78,6 +85,8 @@ export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattl
       onAttackStarted,
       onEnemyBoundsChange,
       onEnemyBoundsListChange,
+      onEnemyTargetHover,
+      onEnemyTargetSelect,
       onPlayerBoundsChange,
       onReactionResolved,
       onTimingInput,
@@ -89,6 +98,8 @@ export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattl
       onAttackStarted,
       onEnemyBoundsChange,
       onEnemyBoundsListChange,
+      onEnemyTargetHover,
+      onEnemyTargetSelect,
       onPlayerBoundsChange,
       onReactionResolved,
       onTimingInput,
@@ -104,6 +115,7 @@ export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattl
       resetDefenseCooldowns: () => sceneRef.current?.resetDefenseCooldowns(),
       showFloatingText: (target, text, tone, enemyId) => sceneRef.current?.showFloatingText(target, text, tone, enemyId),
       showReactionLabel: (label: string, tone?: "good" | "bad" | "neutral") => sceneRef.current?.showReactionLabel(label, tone),
+      setEnemyTargetingEnabled: (enabled: boolean) => sceneRef.current?.setEnemyTargetingEnabled(enabled),
       setReactionTimingModifiers: (modifiers) => sceneRef.current?.setReactionTimingModifiers(modifiers),
       updateEnemyHud: (enemy) => sceneRef.current?.updateEnemyHud(enemy),
     }));
@@ -152,6 +164,8 @@ export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattl
         onAttackStarted: (startedAt: number) => callbacksRef.current.onAttackStarted(startedAt),
         onEnemyBoundsChange: (bounds: DOMRect) => callbacksRef.current.onEnemyBoundsChange(bounds),
         onEnemyBoundsListChange: (bounds: Record<string, DOMRect>) => callbacksRef.current.onEnemyBoundsListChange(bounds),
+        onEnemyTargetHover: (enemyId: string | null) => callbacksRef.current.onEnemyTargetHover(enemyId),
+        onEnemyTargetSelect: (enemyId: string) => callbacksRef.current.onEnemyTargetSelect(enemyId),
         onPlayerBoundsChange: (bounds: DOMRect) => callbacksRef.current.onPlayerBoundsChange(bounds),
         onReactionResolved: (event: {
           hit: AttackHit;
@@ -210,6 +224,10 @@ export const PhaserBattlefield = forwardRef<PhaserBattlefieldHandle, PhaserBattl
     useEffect(() => {
       sceneRef.current?.setReactionTimingModifiers(reactionTimingModifiers);
     }, [reactionTimingModifiers, sceneReadyVersion]);
+
+    useEffect(() => {
+      sceneRef.current?.setEnemyTargetingEnabled(enemyTargetingEnabled);
+    }, [enemyTargetingEnabled, sceneReadyVersion]);
 
     return <div ref={handleHostRef} className="phaser-host" aria-label="Battlefield canvas" />;
   },

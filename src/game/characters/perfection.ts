@@ -1,29 +1,36 @@
 import type { CharacterMechanicState, PerfectionMechanicState, PerfectionRank } from "./types";
 
-export const PERFECTION_GAIN_ON_ENEMY_HIT = 5;
+export const PERFECTION_GAIN_ON_ENEMY_HIT = 1;
 
-export const perfectionRankRules: Record<PerfectionRank, { label: PerfectionRank; threshold: number; damageDealt: number }> = {
+export const perfectionRankRules: Record<PerfectionRank, { label: PerfectionRank; threshold: number; strength: number }> = {
+  D: {
+    label: "D",
+    threshold: 0,
+    strength: 0,
+  },
   C: {
     label: "C",
-    threshold: 0,
-    damageDealt: 1,
+    threshold: 2,
+    strength: 1,
   },
   B: {
     label: "B",
-    threshold: 30,
-    damageDealt: 1.1,
+    threshold: 3,
+    strength: 2,
   },
   A: {
     label: "A",
-    threshold: 60,
-    damageDealt: 1.25,
+    threshold: 5,
+    strength: 3,
   },
   S: {
     label: "S",
-    threshold: 100,
-    damageDealt: 1.5,
+    threshold: 9,
+    strength: 5,
   },
 };
+
+export const perfectionRankOrder: PerfectionRank[] = ["D", "C", "B", "A", "S"];
 
 export const getPerfectionRank = (mechanic: PerfectionMechanicState): PerfectionRank => {
   if (mechanic.perfection >= perfectionRankRules.S.threshold) {
@@ -38,16 +45,47 @@ export const getPerfectionRank = (mechanic: PerfectionMechanicState): Perfection
     return "B";
   }
 
-  return "C";
-};
-
-export const getPerfectionDamageDealtMultiplier = (mechanic: CharacterMechanicState): number => {
-  if (mechanic.type !== "perfection") {
-    return 1;
+  if (mechanic.perfection >= perfectionRankRules.C.threshold) {
+    return "C";
   }
 
-  return perfectionRankRules[getPerfectionRank(mechanic)].damageDealt;
+  return "D";
 };
 
-export const applyPerfectionDamageDealt = (mechanic: CharacterMechanicState, damage: number): number =>
-  Math.round(damage * getPerfectionDamageDealtMultiplier(mechanic));
+export const losePerfectionRank = (mechanic: PerfectionMechanicState): PerfectionMechanicState => {
+  const rank = getPerfectionRank(mechanic);
+  const rankIndex = perfectionRankOrder.indexOf(rank);
+  const previousRank = perfectionRankOrder[Math.max(0, rankIndex - 1)];
+
+  return {
+    ...mechanic,
+    perfection: perfectionRankRules[previousRank].threshold,
+  };
+};
+
+export const getPerfectionTierProgress = (mechanic: PerfectionMechanicState): number => {
+  const rank = getPerfectionRank(mechanic);
+  const rankIndex = perfectionRankOrder.indexOf(rank);
+  const nextRank = perfectionRankOrder[rankIndex + 1];
+
+  if (!nextRank) {
+    return 100;
+  }
+
+  const currentThreshold = perfectionRankRules[rank].threshold;
+  const nextThreshold = perfectionRankRules[nextRank].threshold;
+  const tierSpan = Math.max(1, nextThreshold - currentThreshold);
+
+  return Math.max(0, Math.min(100, ((mechanic.perfection - currentThreshold) / tierSpan) * 100));
+};
+
+export const getPerfectionStrength = (mechanic: CharacterMechanicState): number => {
+  if (mechanic.type !== "perfection") {
+    return 0;
+  }
+
+  return perfectionRankRules[getPerfectionRank(mechanic)].strength;
+};
+
+export const applyPerfectionStrengthDamage = (mechanic: CharacterMechanicState, damage: number): number =>
+  Math.round(damage) + getPerfectionStrength(mechanic);
