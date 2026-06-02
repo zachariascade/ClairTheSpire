@@ -313,39 +313,45 @@ button {
 .enemy-lineup-card::after {
   position: absolute;
   inset: auto 0 0;
-  height: 48%;
+  height: 72%;
   content: "";
-  background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.82));
+  background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.58) 34%, rgba(0, 0, 0, 0.9) 100%);
   pointer-events: none;
 }
 
-.enemy-lineup-card span,
-.enemy-lineup-card strong {
+.enemy-lineup-card-copy {
   position: absolute;
   z-index: 1;
 }
 
-.enemy-lineup-card span {
-  top: 10px;
-  left: 10px;
+.enemy-lineup-card-copy {
+  right: 14px;
+  bottom: 14px;
+  left: 14px;
   display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: 8px;
-  background: rgba(15, 15, 16, 0.76);
-  color: #f5cf72;
-  font-weight: 900;
+  gap: 8px;
+  padding: 0;
+  text-align: left;
 }
 
-.enemy-lineup-card strong {
-  right: 12px;
-  bottom: 12px;
-  left: 12px;
+.enemy-lineup-card-copy strong {
   overflow: hidden;
-  font-size: 16px;
+  color: #f6ecd8;
+  font-size: 18px;
+  font-weight: 900;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.enemy-lineup-card-copy small {
+  display: -webkit-box;
+  overflow: hidden;
+  color: rgba(246, 236, 216, 0.86);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.38;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
 }
 
 .enemy-lineup-random {
@@ -486,7 +492,7 @@ button {
 
 .background-gallery {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-rows: auto minmax(0, 1fr) auto auto;
   gap: 12px;
   min-height: 0;
   height: 100%;
@@ -561,6 +567,16 @@ button {
 .background-preview-random .random-option-mark {
   min-height: 100%;
   font-size: 86px;
+}
+
+.background-flavor {
+  min-height: 42px;
+  margin: 0;
+  color: rgba(246, 236, 216, 0.82);
+  font-size: 14px;
+  font-weight: 650;
+  line-height: 1.45;
+  text-align: center;
 }
 
 .background-options {

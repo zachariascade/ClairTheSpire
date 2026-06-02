@@ -23,11 +23,12 @@ export const maxScenarioEnemies = 3;
 export const enemyDefinitions: Record<EnemyDefinitionId, EnemyDefinition> = {
   "first-talon-acqueline": {
     id: "first-talon-acqueline",
-    name: "First Talon Acqueline",
+    name: "First Talon Aquiline",
     image: "enemies/first-talon-acqueline.png",
     maxHp: 50,
     attackId: "heavy-overhead",
-    description: "A commanding Talon fighter with deliberate, punishing strikes.",
+    description:
+      "Aquiline came from the Night-Serpent's dark order with the calm of a man who had never needed a second attempt at murder.",
   },
   forcas: {
     id: "forcas",
@@ -35,7 +36,8 @@ export const enemyDefinitions: Record<EnemyDefinitionId, EnemyDefinition> = {
     image: "enemies/forcas.png",
     maxHp: 44,
     attackId: "three-hit-combo",
-    description: "A relentless attacker that pressures repeated parry and dodge timing.",
+    description:
+      "The Warehouse breathed around Forcas as though steel and shadow had crowned him king, and the breach laughed through his mouth.",
   },
   rondeau: {
     id: "rondeau",
@@ -43,7 +45,8 @@ export const enemyDefinitions: Record<EnemyDefinitionId, EnemyDefinition> = {
     image: "enemies/rondeau.png",
     maxHp: 38,
     attackId: "quick-slash",
-    description: "A nimble foe with fast, readable strikes and little room for hesitation.",
+    description:
+      "Rondeau sold ruin with a perfect smile, making coercion sound elegant enough for rulers to call it the future.",
   },
   "second-talon-scyara": {
     id: "second-talon-scyara",
@@ -51,7 +54,8 @@ export const enemyDefinitions: Record<EnemyDefinitionId, EnemyDefinition> = {
     image: "enemies/second-talon-scyara.png",
     maxHp: 46,
     attackId: "three-hit-combo",
-    description: "A poised duelist whose measured rhythm punishes sloppy reactions.",
+    description:
+      "Scyara hunted in Aquiline's shadow until holy contradiction split the chase open and doubt found a voice beneath her knives.",
   },
   tetratitanuke: {
     id: "tetratitanuke",
@@ -59,7 +63,8 @@ export const enemyDefinitions: Record<EnemyDefinitionId, EnemyDefinition> = {
     image: "enemies/tetratitanuke.png",
     maxHp: 54,
     attackId: "orbital-laser",
-    description: "A strange engine of layered hits that tests long defensive rhythms.",
+    description:
+      "Egrebath's war-beast fell into the battlefield like biology taught to hate, eighty feet of Cain-grown siege made flesh.",
   },
   vesuvio: {
     id: "vesuvio",
@@ -67,7 +72,8 @@ export const enemyDefinitions: Record<EnemyDefinitionId, EnemyDefinition> = {
     image: "enemies/vesuvio.png",
     maxHp: 48,
     attackId: "shield-breaker",
-    description: "A volcanic brute whose blast rewards preparing solid block before impact.",
+    description:
+      "Vesuvio rose over Prushalem as a bound volcanic Chasm, disciplined catastrophe pouring fire through the city's golden streets.",
   },
 };
 

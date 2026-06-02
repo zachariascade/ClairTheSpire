@@ -4,7 +4,8 @@ export const characterDefinitions: Record<CharacterId, CharacterDefinition> = {
   rev: {
     id: "rev",
     name: "Rev",
-    description: "Changes stance fluidly to answer pressure, then turns the tempo back on the enemy.",
+    description:
+      "Rev came walking out of smoke and sacrament, black coat torn by travel, speaking as if every wound in the world could still be answered by prayer.",
     image: "characters/rev.png",
     maxHp: 58,
     maxEnergy: 3,
@@ -31,7 +32,8 @@ export const characterDefinitions: Record<CharacterId, CharacterDefinition> = {
   eirene: {
     id: "eirene",
     name: "Eirene",
-    description: "A stance specialist who sharpens each transition into poised counterplay.",
+    description:
+      "Eirene carried Grace first as a thesis, then as the only name she had for the thing that kept standing up inside her after terror.",
     image: "characters/eirene.png",
     maxHp: 58,
     maxEnergy: 3,
@@ -58,7 +60,8 @@ export const characterDefinitions: Record<CharacterId, CharacterDefinition> = {
   yung: {
     id: "yung",
     name: "Yung",
-    description: "Builds clean reaction chains toward a decisive perfection finisher.",
+    description:
+      "Yung learned in Xokytos that trust was expensive and survival was cleaner, until Pendulum took him alive and made the old math tremble.",
     image: "characters/yung.png",
     maxHp: 60,
     maxEnergy: 3,
@@ -84,7 +87,8 @@ export const characterDefinitions: Record<CharacterId, CharacterDefinition> = {
   sig: {
     id: "sig",
     name: "Sig",
-    description: "Turns precision defense into rising perfection and heavy finishers.",
+    description:
+      "Sig had already buried enough to know time was never free; still he moved toward the breach, because someone had to teach the living how to stand.",
     image: "characters/sig.png",
     maxHp: 60,
     maxEnergy: 3,

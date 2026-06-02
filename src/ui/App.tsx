@@ -73,6 +73,7 @@ type ResolvedCardPresentationStep = {
   animation?: "slash" | "heavy";
 };
 type BackgroundOption = {
+  flavorText: string;
   id: string;
   name: string;
   image: string;
@@ -104,34 +105,46 @@ type CardKeywordDefinition = {
 const TURN_BANNER_DURATION_MS = 1300;
 const backgroundOptions: BackgroundOption[] = [
   {
-    id: "battlefield",
-    name: "Battlefield",
-    image: "places/battlefield-background.png",
-  },
-  {
     id: "prushalem",
     name: "Prushalem",
     image: "places/prushalem.png",
+    flavorText:
+      "A sacred frontier city of gold-brick boulevards, spires, libraries, and holy civic splendor, beautiful enough that its siege feels civilizational.",
+  },
+  {
+    id: "warehouse-prushalem",
+    name: "Warehouse-Prushalem",
+    image: "places/warehouse-prushalem.png",
+    flavorText:
+      "At the edge of Prushalem, Warehouse #649 opened like a throat in the borderlands, and the city first heard how close Gehenna had come.",
   },
   {
     id: "avaranesh",
     name: "Avaranesh",
     image: "places/avaranesh.png",
+    flavorText:
+      "A dark Gehennic power center of polished authority, executive pressure, and serpent-shadowed wealth where rulers bargain over lives from high rooms.",
   },
   {
     id: "ourobouryx",
-    name: "Ourobouryx",
+    name: "Ouroboryx",
     image: "places/ourobouryx.png",
+    flavorText:
+      "A cold surveilled night city of black-glass towers, lonely flats, dark highways, and lake-house retreats under the unseen pressure of the Night-Serpent.",
   },
   {
     id: "phoeston",
     name: "Phoeston",
     image: "places/phoeston.png",
+    flavorText:
+      "A weary industrial border city of old storefronts, amber shop-light, looming Cain structures, and ordinary life poised on the edge of combustion.",
   },
   {
     id: "xokytos",
     name: "Xokytos",
     image: "places/xokytos.png",
+    flavorText:
+      "Yung's frozen hallucination-city in Moluperbia, where desert vastness, black ice, and unstable perception teach that trust can be fatal.",
   },
 ];
 const soundtrack = {
@@ -1705,11 +1718,7 @@ function CharacterSelectScreen({
             </div>
             <div className="character-gallery-copy">
               <strong>{selectedCharacter?.name ?? "Random"}</strong>
-              <span>
-                {selectedCharacter
-                  ? selectedCharacter.description
-                  : "Roll one playable character from the current roster when the scenario starts."}
-              </span>
+              {selectedCharacter && <span>{selectedCharacter.description}</span>}
               <span>
                 {selectedCharacter
                   ? `${selectedCharacter.maxHp} HP | ${selectedCharacter.maxEnergy} Energy | ${
@@ -1733,8 +1742,6 @@ function CharacterSelectScreen({
               </span>
               <span className="character-option-copy">
                 <strong>Random</strong>
-                <span>Roll one playable character from the current roster.</span>
-                <span>Resolves when the scenario starts</span>
               </span>
             </button>
             {characterOrder.map((characterId) => {
@@ -1754,7 +1761,6 @@ function CharacterSelectScreen({
               >
                 <span className="character-option-copy">
                   <strong>{character.name}</strong>
-                  <span>{character.description}</span>
                     <span>
                       {character.maxHp} HP | {character.maxEnergy} Energy | {mechanicLabel}
                     </span>
@@ -1794,8 +1800,10 @@ function CharacterSelectScreen({
                     aria-label={`Remove ${enemy.name}`}
                   >
                     <img src={`${import.meta.env.BASE_URL}${enemy.image}`} alt="" />
-                    <span>{index + 1}</span>
-                    <strong>{enemy.name}</strong>
+                    <span className="enemy-lineup-card-copy">
+                      <strong>{enemy.name}</strong>
+                      <small>{enemy.description}</small>
+                    </span>
                   </button>
                 );
               })
@@ -1814,7 +1822,6 @@ function CharacterSelectScreen({
               <span className="enemy-option-copy">
                 <strong>Random</strong>
                 <span>1-3 enemies</span>
-                <span>Rolls each slot from the full enemy roster on start.</span>
               </span>
             </button>
             {enemyOrder.map((enemyId) => {
@@ -1835,7 +1842,6 @@ function CharacterSelectScreen({
                   <span className="enemy-option-copy">
                     <strong>{enemy.name}</strong>
                     <span>{enemy.maxHp} HP | {attackPatterns[enemy.attackId].name}</span>
-                    <span>{enemy.description}</span>
                   </span>
                 </button>
               );
@@ -1880,6 +1886,12 @@ function CharacterSelectScreen({
               &rsaquo;
             </button>
           </div>
+
+          <p className="background-flavor">
+            {selectedBackgroundId === "random"
+              ? "Let the arena choose which border, breach, or city of pressure frames the fight."
+              : selectedBackground.flavorText}
+          </p>
 
           <div className="background-options" aria-label="Background options">
             <button
