@@ -1,7 +1,13 @@
 import { attackPatterns, type AttackId } from "./attackPatterns";
 import type { CombatState, EnemyCombatant } from "./types";
 
-export type EnemyDefinitionId = "griffith" | "sephiroth" | "war-apostle" | "astral-sentinel" | "iron-vanguard";
+export type EnemyDefinitionId =
+  | "first-talon-acqueline"
+  | "forcas"
+  | "rondeau"
+  | "second-talon-scyara"
+  | "tetratitanuke"
+  | "vesuvio";
 
 type EnemyDefinition = {
   id: EnemyDefinitionId;
@@ -15,51 +21,66 @@ type EnemyDefinition = {
 export const maxScenarioEnemies = 3;
 
 export const enemyDefinitions: Record<EnemyDefinitionId, EnemyDefinition> = {
-  griffith: {
-    id: "griffith",
-    name: "Griffith",
-    image: "griffith.png",
-    maxHp: 64,
-    attackId: "quick-slash",
-    description: "Fast single-target pressure with a readable opening slash.",
-  },
-  sephiroth: {
-    id: "sephiroth",
-    name: "Sephiroth",
-    image: "sephiroth.png",
-    maxHp: 68,
+  "first-talon-acqueline": {
+    id: "first-talon-acqueline",
+    name: "First Talon Acqueline",
+    image: "enemies/first-talon-acqueline.png",
+    maxHp: 50,
     attackId: "heavy-overhead",
-    description: "A precise duelist with a delayed, punishing Masamune strike.",
+    description: "A commanding Talon fighter with deliberate, punishing strikes.",
   },
-  "war-apostle": {
-    id: "war-apostle",
-    name: "War Apostle",
-    image: "griffith.png",
-    maxHp: 36,
+  forcas: {
+    id: "forcas",
+    name: "Forcas",
+    image: "enemies/forcas.png",
+    maxHp: 44,
     attackId: "three-hit-combo",
-    description: "A bruiser that tests repeated parry and dodge timing.",
+    description: "A relentless attacker that pressures repeated parry and dodge timing.",
   },
-  "astral-sentinel": {
-    id: "astral-sentinel",
-    name: "Astral Sentinel",
-    image: "griffith.png",
-    maxHp: 30,
+  rondeau: {
+    id: "rondeau",
+    name: "Rondeau",
+    image: "enemies/rondeau.png",
+    maxHp: 38,
+    attackId: "quick-slash",
+    description: "A nimble foe with fast, readable strikes and little room for hesitation.",
+  },
+  "second-talon-scyara": {
+    id: "second-talon-scyara",
+    name: "Second Talon Scyara",
+    image: "enemies/second-talon-scyara.png",
+    maxHp: 46,
+    attackId: "three-hit-combo",
+    description: "A poised duelist whose measured rhythm punishes sloppy reactions.",
+  },
+  tetratitanuke: {
+    id: "tetratitanuke",
+    name: "Tetratitanuke",
+    image: "enemies/tetratitanuke.png",
+    maxHp: 54,
     attackId: "orbital-laser",
-    description: "Low health, long attack strings, and punishing rhythm checks.",
+    description: "A strange engine of layered hits that tests long defensive rhythms.",
   },
-  "iron-vanguard": {
-    id: "iron-vanguard",
-    name: "Iron Vanguard",
-    image: "griffith.png",
-    maxHp: 42,
+  vesuvio: {
+    id: "vesuvio",
+    name: "Vesuvio",
+    image: "enemies/vesuvio.png",
+    maxHp: 48,
     attackId: "shield-breaker",
-    description: "A defensive test that rewards planning block before its blast.",
+    description: "A volcanic brute whose blast rewards preparing solid block before impact.",
   },
 };
 
-export const enemyOrder: EnemyDefinitionId[] = ["griffith", "sephiroth", "war-apostle", "astral-sentinel", "iron-vanguard"];
+export const enemyOrder: EnemyDefinitionId[] = [
+  "vesuvio",
+  "first-talon-acqueline",
+  "forcas",
+  "rondeau",
+  "second-talon-scyara",
+  "tetratitanuke",
+];
 
-export const defaultEnemySelection: EnemyDefinitionId[] = ["griffith"];
+export const defaultEnemySelection: EnemyDefinitionId[] = ["vesuvio"];
 
 export const normalizeEnemySelection = (enemyIds?: readonly EnemyDefinitionId[]): EnemyDefinitionId[] => {
   const validEnemyIds = (enemyIds ?? defaultEnemySelection)

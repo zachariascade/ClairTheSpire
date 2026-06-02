@@ -80,10 +80,14 @@ type BackgroundOption = {
 type MusicPlaybackState = "off" | "loading" | "on" | "missing";
 type AppRoute = "root" | "battle";
 type SetupStep = "character" | "enemies" | "environment";
+type RandomSelection = "random";
+type CharacterSelection = CharacterId | RandomSelection;
+type BackgroundSelection = string | RandomSelection;
+type EnemySelection = EnemyDefinitionId[] | RandomSelection;
 type UrlSelection = {
-  characterId: CharacterId;
-  backgroundId: string;
-  enemyIds: EnemyDefinitionId[];
+  characterId: CharacterSelection;
+  backgroundId: BackgroundSelection;
+  enemyIds: EnemySelection;
 };
 type StatusDisplayDefinition = {
   description: string;
@@ -100,14 +104,34 @@ type CardKeywordDefinition = {
 const TURN_BANNER_DURATION_MS = 1300;
 const backgroundOptions: BackgroundOption[] = [
   {
-    id: "castle",
-    name: "Castle",
-    image: "castle-background.png",
-  },
-  {
     id: "battlefield",
     name: "Battlefield",
-    image: "battlefield-background.png",
+    image: "places/battlefield-background.png",
+  },
+  {
+    id: "prushalem",
+    name: "Prushalem",
+    image: "places/prushalem.png",
+  },
+  {
+    id: "avaranesh",
+    name: "Avaranesh",
+    image: "places/avaranesh.png",
+  },
+  {
+    id: "ourobouryx",
+    name: "Ourobouryx",
+    image: "places/ourobouryx.png",
+  },
+  {
+    id: "phoeston",
+    name: "Phoeston",
+    image: "places/phoeston.png",
+  },
+  {
+    id: "xokytos",
+    name: "Xokytos",
+    image: "places/xokytos.png",
   },
 ];
 const soundtrack = {
@@ -119,7 +143,7 @@ const soundtrack = {
 };
 
 const defaultUrlSelection: UrlSelection = {
-  characterId: "perfector",
+  characterId: "yung",
   backgroundId: backgroundOptions[0].id,
   enemyIds: defaultEnemySelection,
 };
@@ -196,27 +220,63 @@ const cardKeywordDefinitions: CardKeywordDefinition[] = [
 
 const normalizeCharacterId = (value: string | null): CharacterId | null => {
   if (value === "perfection") {
-    return "perfector";
+    return "yung";
   }
 
   if (value === "stance") {
-    return "fencer";
+    return "rev";
   }
 
   return value !== null && value in characterDefinitions ? (value as CharacterId) : null;
 };
 
+const normalizeCharacterSelection = (value: string | null): CharacterSelection | null =>
+  value === "random" ? "random" : normalizeCharacterId(value);
+
 const isBackgroundId = (value: string | null): value is string =>
   value !== null && backgroundOptions.some((background) => background.id === value);
+
+const normalizeBackgroundSelection = (value: string | null): BackgroundSelection | null =>
+  value === "random" ? "random" : isBackgroundId(value) ? value : null;
+
+const pickRandomItem = <T,>(items: readonly T[], current?: T): T => {
+  const candidates = current === undefined ? items : items.filter((item) => item !== current);
+  const pool = candidates.length > 0 ? candidates : items;
+
+  return pool[Math.floor(Math.random() * pool.length)];
+};
 
 const normalizeEnemyId = (value: string): EnemyDefinitionId | null =>
   value in enemyDefinitions ? (value as EnemyDefinitionId) : null;
 
-const readEnemySelection = (params: URLSearchParams): EnemyDefinitionId[] => {
+const rollEnemySelection = (): EnemyDefinitionId[] => {
+  const count = Math.floor(Math.random() * maxScenarioEnemies) + 1;
+
+  return Array.from({ length: count }, () => pickRandomItem(enemyOrder));
+};
+
+const resolveUrlSelection = (selection: UrlSelection): { characterId: CharacterId; backgroundId: string; enemyIds: EnemyDefinitionId[] } => ({
+  characterId: selection.characterId === "random" ? pickRandomItem(characterOrder) : selection.characterId,
+  backgroundId:
+    selection.backgroundId === "random"
+      ? pickRandomItem(backgroundOptions.map((background) => background.id))
+      : selection.backgroundId,
+  enemyIds: selection.enemyIds === "random" ? rollEnemySelection() : normalizeEnemySelection(selection.enemyIds),
+});
+
+const readEnemySelection = (params: URLSearchParams): EnemySelection => {
   const rawEnemies = params.get("enemies");
 
-  if (!rawEnemies) {
+  if (rawEnemies === null) {
     return defaultUrlSelection.enemyIds;
+  }
+
+  if (rawEnemies.trim() === "") {
+    return [];
+  }
+
+  if (rawEnemies === "random") {
+    return "random";
   }
 
   return normalizeEnemySelection(
@@ -233,8 +293,8 @@ const readUrlSelection = (): UrlSelection => {
   const scene = params.get("scene");
 
   return {
-    characterId: normalizeCharacterId(character) ?? defaultUrlSelection.characterId,
-    backgroundId: isBackgroundId(scene) ? scene : defaultUrlSelection.backgroundId,
+    characterId: normalizeCharacterSelection(character) ?? defaultUrlSelection.characterId,
+    backgroundId: normalizeBackgroundSelection(scene) ?? defaultUrlSelection.backgroundId,
     enemyIds: readEnemySelection(params),
   };
 };
@@ -261,7 +321,7 @@ const writeUrlSelection = (selection: UrlSelection, route: AppRoute, mode: "push
   url.pathname = getRoutePath(route);
   url.searchParams.set("character", selection.characterId);
   url.searchParams.set("scene", selection.backgroundId);
-  url.searchParams.set("enemies", normalizeEnemySelection(selection.enemyIds).join(","));
+  url.searchParams.set("enemies", selection.enemyIds === "random" ? "random" : selection.enemyIds.join(","));
   url.searchParams.delete("screen");
 
   if (mode === "push") {
@@ -580,17 +640,19 @@ const renderCardRulesText = (
 export function App() {
   const initialUrlSelection = useMemo(readUrlSelection, []);
   const initialRoute = useMemo(getRoute, []);
+  const initialCombatSelection = useMemo(() => resolveUrlSelection(initialUrlSelection), [initialUrlSelection]);
+  const initialSelectedSelection = initialRoute === "battle" ? initialCombatSelection : initialUrlSelection;
   const [state, dispatch] = useReducer(
     combatReducer,
     {
-      characterId: initialUrlSelection.characterId,
-      enemyIds: initialUrlSelection.enemyIds,
+      characterId: initialCombatSelection.characterId,
+      enemyIds: initialCombatSelection.enemyIds,
     },
     createInitialCombatState,
   );
-  const [selectedCharacterId, setSelectedCharacterId] = useState<CharacterId>(initialUrlSelection.characterId);
-  const [selectedEnemyIds, setSelectedEnemyIds] = useState<EnemyDefinitionId[]>(initialUrlSelection.enemyIds);
-  const [selectedBackgroundId, setSelectedBackgroundId] = useState(initialUrlSelection.backgroundId);
+  const [selectedCharacterId, setSelectedCharacterId] = useState<CharacterSelection>(initialSelectedSelection.characterId);
+  const [selectedEnemyIds, setSelectedEnemyIds] = useState<EnemySelection>(initialSelectedSelection.enemyIds);
+  const [selectedBackgroundId, setSelectedBackgroundId] = useState<BackgroundSelection>(initialSelectedSelection.backgroundId);
   const [route, setRoute] = useState<AppRoute>(initialRoute);
   const [enemyRect, setEnemyRect] = useState<DOMRect | null>(null);
   const [enemyRects, setEnemyRects] = useState<Record<string, DOMRect>>({});
@@ -640,36 +702,35 @@ export function App() {
   const hoveredEnemyIsVulnerable = isAimingEnemyCard && hoveredEnemy !== null && hasStatus(hoveredEnemy.statuses, "vulnerable");
   const currentAttackPattern = attackPatterns[activeEnemy.attackId];
   const reactionTimingModifiers = useMemo(() => getReactionTimingModifiers(state), [state]);
+  const resolvedBackgroundId = selectedBackgroundId === "random" ? initialCombatSelection.backgroundId : selectedBackgroundId;
   const selectedBackground =
-    backgroundOptions.find((background) => background.id === selectedBackgroundId) ?? backgroundOptions[0];
+    backgroundOptions.find((background) => background.id === resolvedBackgroundId) ?? backgroundOptions[0];
   const canSpendRankAsPoise =
     state.player.mechanic.type === "perfection" &&
     getPerfectionRank(state.player.mechanic) !== "D" &&
     state.player.relics.some((relic) => relic.id === "rank-reserve");
   const canAttemptReaction = state.phase === "enemyAttack" && (state.player.poise > 0 || canSpendRankAsPoise);
+  const enemyTurnActive = state.phase === "enemyTurn" || state.phase === "enemyAttack";
 
   useEffect(() => {
     poiseRef.current = state.player.poise;
   }, [state.player.poise]);
 
-  const startCombat = useCallback((characterId: CharacterId, enemyIds: EnemyDefinitionId[]) => {
-    const normalizedEnemyIds = normalizeEnemySelection(enemyIds);
+  const startCombat = useCallback((selection: UrlSelection) => {
+    const resolvedSelection = resolveUrlSelection(selection);
 
     playSfx("ui.confirm", { volume: 0.44 });
-    setSelectedCharacterId(characterId);
-    setSelectedEnemyIds(normalizedEnemyIds);
-    dispatch({ type: "RESET_COMBAT", characterId, enemyIds: normalizedEnemyIds });
+    setSelectedCharacterId(resolvedSelection.characterId);
+    setSelectedEnemyIds(resolvedSelection.enemyIds);
+    setSelectedBackgroundId(resolvedSelection.backgroundId);
+    dispatch({ type: "RESET_COMBAT", characterId: resolvedSelection.characterId, enemyIds: resolvedSelection.enemyIds });
     setRoute("battle");
     writeUrlSelection(
-      {
-        characterId,
-        backgroundId: selectedBackgroundId,
-        enemyIds: normalizedEnemyIds,
-      },
+      resolvedSelection,
       "battle",
       "push",
     );
-  }, [selectedBackgroundId]);
+  }, []);
 
   useEffect(() => {
     writeUrlSelection({
@@ -725,7 +786,12 @@ export function App() {
       setRoute(nextRoute);
 
       if (nextRoute === "battle") {
-        dispatch({ type: "RESET_COMBAT", characterId: nextSelection.characterId, enemyIds: nextSelection.enemyIds });
+        const resolvedSelection = resolveUrlSelection(nextSelection);
+        setSelectedCharacterId(resolvedSelection.characterId);
+        setSelectedEnemyIds(resolvedSelection.enemyIds);
+        setSelectedBackgroundId(resolvedSelection.backgroundId);
+        dispatch({ type: "RESET_COMBAT", characterId: resolvedSelection.characterId, enemyIds: resolvedSelection.enemyIds });
+        writeUrlSelection(resolvedSelection, "battle");
       }
     };
 
@@ -1150,7 +1216,11 @@ export function App() {
           onSelect={setSelectedCharacterId}
           onSelectEnemies={setSelectedEnemyIds}
           onSelectBackground={setSelectedBackgroundId}
-          onStart={() => startCombat(selectedCharacterId, selectedEnemyIds)}
+          onStart={() => startCombat({
+            characterId: selectedCharacterId,
+            backgroundId: selectedBackgroundId,
+            enemyIds: selectedEnemyIds,
+          })}
         />
       </main>
     );
@@ -1285,7 +1355,11 @@ export function App() {
               lastEnemyPhaseSummary={state.lastEnemyPhaseSummary}
               showTimingAssist={showTimingAssist}
               onReset={() => {
-                dispatch({ type: "RESET_COMBAT", characterId: state.player.characterId, enemyIds: selectedEnemyIds });
+                dispatch({
+                  type: "RESET_COMBAT",
+                  characterId: state.player.characterId,
+                  enemyIds: state.enemies.map((enemy) => enemy.definitionId),
+                });
               }}
               onSetAttack={(attackId) => dispatch({ type: "SET_NEXT_ATTACK", attackId })}
               onToggleCollapsed={() => setDebugCollapsed((value) => !value)}
@@ -1305,13 +1379,15 @@ export function App() {
             onDodge={() => {
               battlefieldRef.current?.attemptDodge();
             }}
-            onParry={() => {
-              battlefieldRef.current?.attemptParry();
-            }}
           />
         </div>
 
-        <div className="bottom-ui">
+        <div className={`bottom-ui ${enemyTurnActive ? "is-enemy-turn" : ""}`}>
+          <div className="pile-readout draw-readout" aria-label={`${state.drawPile.length} cards in draw pile`}>
+            <span>Draw</span>
+            <strong>{state.drawPile.length}</strong>
+          </div>
+
           <div className="energy-readout">
             <span>Energy</span>
             <strong>
@@ -1320,39 +1396,49 @@ export function App() {
             </strong>
           </div>
 
-          <div className="poise-readout" aria-label={`${state.player.poise} of ${state.player.maxPoise} Poise`}>
-            <span>Poise</span>
+          <button
+            className="poise-readout poise-parry-button"
+            type="button"
+            disabled={!canAttemptReaction}
+            title={enemyTurnActive ? "Parry (A). Costs 1 Poise." : "Poise"}
+            aria-label={
+              enemyTurnActive
+                ? `Parry. ${state.player.poise} Poise left.`
+                : `${state.player.poise} of ${state.player.maxPoise} Poise`
+            }
+            onClick={() => {
+              battlefieldRef.current?.attemptParry();
+            }}
+          >
+            <span>{enemyTurnActive ? "Parry" : "Poise"}</span>
             <strong>
               <span className="poise-diamond" aria-hidden="true" />
               {state.player.poise}
             </strong>
-          </div>
+          </button>
 
-          <div className="pile-readout draw-readout" aria-label={`${state.drawPile.length} cards in draw pile`}>
-            <span>Draw</span>
-            <strong>{state.drawPile.length}</strong>
-          </div>
-
-          <div className="hand" aria-label="Card hand">
-            {state.hand.map((card) => (
-              <CombatCardView
-                key={card.instanceId}
-                card={card}
-                mechanic={state.player.mechanic}
-                relics={state.player.relics}
-                statuses={state.player.statuses}
-                selected={state.selectedCardId === card.instanceId}
-                enemyIsVulnerablePreview={state.selectedCardId === card.instanceId && hoveredEnemyIsVulnerable}
-                disabled={
-                  state.phase !== "playerTurn" ||
-                  state.player.energy < cardDefinitions[card.definitionId].cost ||
-                  Boolean(getCardPlayBlockReason(cardDefinitions[card.definitionId], state.player.mechanic))
-                }
-                onBoundsChange={(rect) => setCardRects((rects) => ({ ...rects, [card.instanceId]: rect }))}
-                onPlay={() => handleCardClick(card)}
-              />
-            ))}
-          </div>
+          {state.phase === "playerTurn" && (
+            <div className="hand" aria-label="Card hand">
+              {state.hand.map((card) => (
+                <CombatCardView
+                  key={card.instanceId}
+                  card={card}
+                  mechanic={state.player.mechanic}
+                  relics={state.player.relics}
+                  statuses={state.player.statuses}
+                  selected={state.selectedCardId === card.instanceId}
+                  enemyIsVulnerablePreview={state.selectedCardId === card.instanceId && hoveredEnemyIsVulnerable}
+                  disabled={
+                    state.phase !== "playerTurn" ||
+                    state.player.energy < cardDefinitions[card.definitionId].cost ||
+                    Boolean(getCardPlayBlockReason(cardDefinitions[card.definitionId], state.player.mechanic))
+                  }
+                  onBoundsChange={(rect) => setCardRects((rects) => ({ ...rects, [card.instanceId]: rect }))}
+                  onPlay={() => handleCardClick(card)}
+                />
+              ))}
+            </div>
+          )}
 
           <div className="pile-readout discard-readout" aria-label={`${state.discard.length} cards in discard pile`}>
             <span>Discard</span>
@@ -1377,7 +1463,11 @@ export function App() {
             <strong>{state.phase === "won" ? "Victory" : "Defeat"}</strong>
             <button
               type="button"
-              onClick={() => dispatch({ type: "RESET_COMBAT", characterId: state.player.characterId, enemyIds: selectedEnemyIds })}
+              onClick={() => dispatch({
+                type: "RESET_COMBAT",
+                characterId: state.player.characterId,
+                enemyIds: state.enemies.map((enemy) => enemy.definitionId),
+              })}
             >
               Reset
             </button>
@@ -1532,20 +1622,22 @@ function CharacterSelectScreen({
   onSelectBackground,
   onStart,
 }: {
-  selectedCharacterId: CharacterId;
-  selectedEnemyIds: EnemyDefinitionId[];
-  selectedBackgroundId: string;
-  onSelect: (characterId: CharacterId) => void;
-  onSelectEnemies: (enemyIds: EnemyDefinitionId[]) => void;
-  onSelectBackground: (backgroundId: string) => void;
+  selectedCharacterId: CharacterSelection;
+  selectedEnemyIds: EnemySelection;
+  selectedBackgroundId: BackgroundSelection;
+  onSelect: (characterId: CharacterSelection) => void;
+  onSelectEnemies: (enemyIds: EnemySelection) => void;
+  onSelectBackground: (backgroundId: BackgroundSelection) => void;
   onStart: () => void;
 }) {
   const [setupStep, setSetupStep] = useState<SetupStep>("character");
-  const normalizedEnemyIds = normalizeEnemySelection(selectedEnemyIds);
-  const enemySelectionFull = normalizedEnemyIds.length >= maxScenarioEnemies;
+  const randomEnemiesSelected = selectedEnemyIds === "random";
+  const normalizedEnemyIds = randomEnemiesSelected ? [] : selectedEnemyIds;
+  const enemySelectionFull = !randomEnemiesSelected && normalizedEnemyIds.length >= maxScenarioEnemies;
+  const selectedCharacter = selectedCharacterId === "random" ? null : characterDefinitions[selectedCharacterId];
   const selectedBackgroundIndex = Math.max(
     0,
-    backgroundOptions.findIndex((background) => background.id === selectedBackgroundId),
+    selectedBackgroundId === "random" ? 0 : backgroundOptions.findIndex((background) => background.id === selectedBackgroundId),
   );
   const selectedBackground = backgroundOptions[selectedBackgroundIndex] ?? backgroundOptions[0];
   const enemyCounts = normalizedEnemyIds.reduce<Record<string, number>>((counts, enemyId) => {
@@ -1556,7 +1648,21 @@ function CharacterSelectScreen({
     const nextIndex = (selectedBackgroundIndex + offset + backgroundOptions.length) % backgroundOptions.length;
     onSelectBackground(backgroundOptions[nextIndex].id);
   };
-  const addEnemy = (enemyId: EnemyDefinitionId) => {
+  const selectRandomCharacter = () => {
+    onSelect("random");
+  };
+  const selectRandomEnemy = () => {
+    onSelectEnemies("random");
+  };
+  const selectRandomBackground = () => {
+    onSelectBackground("random");
+  };
+  const toggleEnemy = (enemyId: EnemyDefinitionId) => {
+    if (normalizedEnemyIds.includes(enemyId)) {
+      onSelectEnemies(normalizedEnemyIds.filter((selectedEnemyId) => selectedEnemyId !== enemyId));
+      return;
+    }
+
     if (enemySelectionFull) {
       return;
     }
@@ -1565,7 +1671,7 @@ function CharacterSelectScreen({
   };
   const removeEnemyAt = (indexToRemove: number) => {
     const nextEnemyIds = normalizedEnemyIds.filter((_, index) => index !== indexToRemove);
-    onSelectEnemies(normalizeEnemySelection(nextEnemyIds));
+    onSelectEnemies(nextEnemyIds);
   };
   const stepIndex = setupStep === "character" ? 1 : setupStep === "enemies" ? 2 : 3;
 
@@ -1581,46 +1687,136 @@ function CharacterSelectScreen({
       </div>
 
       {setupStep === "character" && (
-        <div className="character-options">
-          {characterOrder.map((characterId) => {
-            const character = characterDefinitions[characterId];
-            const selected = selectedCharacterId === characterId;
-            const mechanicLabel =
-              character.mechanics.type === "perfection"
-                ? `Perfection ${character.mechanics.maxPerfection}`
-                : `${stanceRules[character.mechanics.startingStance].label} Stance`;
+        <section className="selection-gallery character-gallery" aria-label="Choose character">
+          <div className="selection-gallery-header">
+            <span>Character</span>
+            <strong>{selectedCharacter?.name ?? "Random"}</strong>
+          </div>
 
-            return (
+          <div className={`character-gallery-stage ${selectedCharacterId === "random" ? "character-gallery-stage-random" : ""}`}>
+            <div className="character-gallery-preview">
+              {selectedCharacter ? (
+                <img src={`${import.meta.env.BASE_URL}${selectedCharacter.image}`} alt="" />
+              ) : (
+                <span className="random-option-mark" aria-hidden="true">
+                  ?
+                </span>
+              )}
+            </div>
+            <div className="character-gallery-copy">
+              <strong>{selectedCharacter?.name ?? "Random"}</strong>
+              <span>
+                {selectedCharacter
+                  ? selectedCharacter.description
+                  : "Roll one playable character from the current roster when the scenario starts."}
+              </span>
+              <span>
+                {selectedCharacter
+                  ? `${selectedCharacter.maxHp} HP | ${selectedCharacter.maxEnergy} Energy | ${
+                      selectedCharacter.mechanics.type === "perfection"
+                        ? `Perfection ${selectedCharacter.mechanics.maxPerfection}`
+                        : `${stanceRules[selectedCharacter.mechanics.startingStance].label} Stance`
+                    }`
+                  : "Random character"}
+              </span>
+            </div>
+          </div>
+
+          <div className="character-options">
+            <button
+              className={`character-option random-option ${selectedCharacterId === "random" ? "is-selected" : ""}`}
+              type="button"
+              onClick={selectRandomCharacter}
+            >
+              <span className="random-option-mark" aria-hidden="true">
+                ?
+              </span>
+              <span className="character-option-copy">
+                <strong>Random</strong>
+                <span>Roll one playable character from the current roster.</span>
+                <span>Resolves when the scenario starts</span>
+              </span>
+            </button>
+            {characterOrder.map((characterId) => {
+              const character = characterDefinitions[characterId];
+              const selected = selectedCharacterId === characterId;
+              const mechanicLabel =
+                character.mechanics.type === "perfection"
+                  ? `Perfection ${character.mechanics.maxPerfection}`
+                  : `${stanceRules[character.mechanics.startingStance].label} Stance`;
+
+              return (
               <button
                 className={`character-option ${selected ? "is-selected" : ""}`}
                 key={character.id}
                 type="button"
                 onClick={() => onSelect(character.id)}
               >
-                <span className="character-portrait">
-                  <img src={`${import.meta.env.BASE_URL}${character.image}`} alt="" />
-                </span>
                 <span className="character-option-copy">
                   <strong>{character.name}</strong>
                   <span>{character.description}</span>
-                  <span>
-                    {character.maxHp} HP | {character.maxEnergy} Energy | {mechanicLabel}
+                    <span>
+                      {character.maxHp} HP | {character.maxEnergy} Energy | {mechanicLabel}
+                    </span>
                   </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
       )}
 
       {setupStep === "enemies" && (
         <section className="enemy-selection" aria-label="Choose enemies">
           <div className="enemy-selection-header">
             <span>Enemies</span>
-            <strong>{normalizedEnemyIds.length}/{maxScenarioEnemies}</strong>
+            <strong>{randomEnemiesSelected ? "Random" : `${normalizedEnemyIds.length}/${maxScenarioEnemies}`}</strong>
+          </div>
+
+          <div className={`enemy-lineup-gallery ${randomEnemiesSelected ? "enemy-lineup-gallery-random" : ""}`}>
+            {randomEnemiesSelected ? (
+              <div className="enemy-lineup-random">
+                <span className="random-option-mark" aria-hidden="true">
+                  ?
+                </span>
+                <strong>Random enemies</strong>
+              </div>
+            ) : (
+              normalizedEnemyIds.map((enemyId, index) => {
+                const enemy = enemyDefinitions[enemyId];
+
+                return (
+                  <button
+                    className="enemy-lineup-card"
+                    key={`${enemyId}-${index}`}
+                    type="button"
+                    onClick={() => removeEnemyAt(index)}
+                    aria-label={`Remove ${enemy.name}`}
+                  >
+                    <img src={`${import.meta.env.BASE_URL}${enemy.image}`} alt="" />
+                    <span>{index + 1}</span>
+                    <strong>{enemy.name}</strong>
+                  </button>
+                );
+              })
+            )}
           </div>
 
           <div className="enemy-options">
+            <button
+              className={`enemy-option random-option ${randomEnemiesSelected ? "is-selected" : ""}`}
+              type="button"
+              onClick={selectRandomEnemy}
+            >
+              <span className="random-option-mark" aria-hidden="true">
+                ?
+              </span>
+              <span className="enemy-option-copy">
+                <strong>Random</strong>
+                <span>1-3 enemies</span>
+                <span>Rolls each slot from the full enemy roster on start.</span>
+              </span>
+            </button>
             {enemyOrder.map((enemyId) => {
               const enemy = enemyDefinitions[enemyId];
               const count = enemyCounts[enemyId] ?? 0;
@@ -1630,8 +1826,8 @@ function CharacterSelectScreen({
                   className={`enemy-option ${count > 0 ? "is-selected" : ""}`}
                   key={enemy.id}
                   type="button"
-                  disabled={enemySelectionFull}
-                  onClick={() => addEnemy(enemy.id)}
+                  disabled={enemySelectionFull && count === 0}
+                  onClick={() => toggleEnemy(enemy.id)}
                 >
                   <span className="enemy-option-count" aria-label={`${count} selected`}>
                     {count}
@@ -1645,26 +1841,6 @@ function CharacterSelectScreen({
               );
             })}
           </div>
-
-          <div className="selected-enemy-list" aria-label="Selected enemies">
-            {normalizedEnemyIds.map((enemyId, index) => {
-              const enemy = enemyDefinitions[enemyId];
-
-              return (
-                <button
-                  className="selected-enemy"
-                  key={`${enemyId}-${index}`}
-                  type="button"
-                  disabled={normalizedEnemyIds.length <= 1}
-                  onClick={() => removeEnemyAt(index)}
-                  aria-label={`Remove ${enemy.name}`}
-                >
-                  <span>{index + 1}</span>
-                  <strong>{enemy.name}</strong>
-                </button>
-              );
-            })}
-          </div>
         </section>
       )}
 
@@ -1672,7 +1848,7 @@ function CharacterSelectScreen({
         <section className="background-gallery" aria-label="Choose scene">
           <div className="background-gallery-header">
             <span>Scene</span>
-            <strong>{selectedBackground.name}</strong>
+            <strong>{selectedBackgroundId === "random" ? "Random" : selectedBackground.name}</strong>
           </div>
 
           <div className="background-gallery-stage">
@@ -1685,8 +1861,14 @@ function CharacterSelectScreen({
               &lsaquo;
             </button>
 
-            <div className="background-preview">
-              <img src={`${import.meta.env.BASE_URL}${selectedBackground.image}`} alt="" />
+            <div className={`background-preview ${selectedBackgroundId === "random" ? "background-preview-random" : ""}`}>
+              {selectedBackgroundId === "random" ? (
+                <span className="random-option-mark" aria-hidden="true">
+                  ?
+                </span>
+              ) : (
+                <img src={`${import.meta.env.BASE_URL}${selectedBackground.image}`} alt="" />
+              )}
             </div>
 
             <button
@@ -1700,6 +1882,16 @@ function CharacterSelectScreen({
           </div>
 
           <div className="background-options" aria-label="Background options">
+            <button
+              className={`background-option random-option ${selectedBackgroundId === "random" ? "is-selected" : ""}`}
+              type="button"
+              onClick={selectRandomBackground}
+            >
+              <span className="random-option-mark" aria-hidden="true">
+                ?
+              </span>
+              <span>Random</span>
+            </button>
             {backgroundOptions.map((background) => {
               const selected = selectedBackgroundId === background.id;
 
@@ -1711,7 +1903,6 @@ function CharacterSelectScreen({
                   aria-pressed={selected}
                   onClick={() => onSelectBackground(background.id)}
                 >
-                  <img src={`${import.meta.env.BASE_URL}${background.image}`} alt="" />
                   <span>{background.name}</span>
                 </button>
               );
@@ -2002,20 +2193,14 @@ function EnemyTurnInputHint() {
 function ReactionControls({
   disabled,
   onDodge,
-  onParry,
 }: {
   disabled: boolean;
   onDodge: () => void;
-  onParry: () => void;
 }) {
   return (
     <div className="reaction-controls" aria-label="Reaction actions">
-      <button type="button" disabled={disabled} title="Parry (A). Costs 1 Poise." onClick={onParry}>
-        <span>A</span>
-        Parry
-      </button>
-      <button type="button" disabled={disabled} title="Dodge (S). Costs 1 Poise." onClick={onDodge}>
-        <span>S</span>
+      <button className="reaction-button" type="button" disabled={disabled} title="Dodge (S). Costs 1 Poise." onClick={onDodge}>
+        <span className="reaction-key">S</span>
         Dodge
       </button>
     </div>

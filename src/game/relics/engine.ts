@@ -14,9 +14,10 @@ const createRelic = (id: RelicId): PlayerRelic => ({
 });
 
 export const createStartingRelics = (characterId: CharacterId): PlayerRelic[] => {
-  const characterRelic: RelicId = characterId === "fencer" ? "mirror-guard" : "duelists-tempo";
+  const isStanceCharacter = characterId === "rev" || characterId === "eirene";
+  const characterRelic: RelicId = isStanceCharacter ? "mirror-guard" : "duelists-tempo";
   const relicIds: RelicId[] =
-    characterId === "perfector"
+    !isStanceCharacter
       ? [characterRelic, "rising-poise", "rank-strength", "rank-reserve", "iron-thread", "steady-pulse"]
       : [characterRelic, "virtuoso-reserve", "defensive-dexterity", "offensive-riposte", "iron-thread", "steady-pulse"];
 

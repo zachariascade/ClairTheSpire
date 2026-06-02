@@ -79,8 +79,8 @@ export class BattleScene extends Phaser.Scene {
   private attackResolutionTimers: Phaser.Time.TimerEvent[] = [];
   private attackVisualTimers: Phaser.Time.TimerEvent[] = [];
   private eventsBridge!: BattleSceneEvents;
-  private backgroundPath = publicAssetPath("castle-background.png");
-  private playerSpritePath = publicAssetPath("gutz.png");
+  private backgroundPath = publicAssetPath("places/battlefield-background.png");
+  private playerSpritePath = publicAssetPath("characters/gutz.png");
   private phase: CombatPhase = "playerTurn";
   private attackId: AttackId = "quick-slash";
   private enemyCount = 1;
@@ -105,8 +105,8 @@ export class BattleScene extends Phaser.Scene {
 
   init(data: SceneData) {
     this.eventsBridge = data;
-    this.backgroundPath = data.backgroundPath ?? publicAssetPath("castle-background.png");
-    this.playerSpritePath = data.playerSpritePath ?? publicAssetPath("gutz.png");
+    this.backgroundPath = data.backgroundPath ?? publicAssetPath("places/battlefield-background.png");
+    this.playerSpritePath = data.playerSpritePath ?? publicAssetPath("characters/gutz.png");
     this.configureEnemyFormation(data.enemies ?? [], data.activeEnemyId ?? "");
   }
 
@@ -553,7 +553,7 @@ export class BattleScene extends Phaser.Scene {
   }
 
   private createEnemyActor(x: number, y: number, index = 0) {
-    const textureKey = getEnemySpriteKey(this.enemyStates[index]?.image ?? "griffith.png");
+    const textureKey = getEnemySpriteKey(this.enemyStates[index]?.image ?? "enemies/vesuvio.png");
 
     if (!this.textures.exists(textureKey)) {
       return this.createActor(x, y, 0x9d514c, "RIVAL");
@@ -563,7 +563,6 @@ export class BattleScene extends Phaser.Scene {
     const sprite = this.add.image(0, 0, textureKey);
 
     sprite.setOrigin(0.5, 0.72);
-    sprite.setFlipX(true);
     this.fitSpriteToBox(sprite, ACTOR_SPRITE_MAX_WIDTH, ACTOR_SPRITE_MAX_HEIGHT);
     container.add(sprite);
     return container;
@@ -1421,11 +1420,9 @@ export class BattleScene extends Phaser.Scene {
     }
 
     const { width, height } = this.scale;
-    const texture = this.background.texture.getSourceImage() as HTMLImageElement;
-    const scale = Math.max(width / texture.width, height / texture.height);
 
     this.background.setPosition(width / 2, height / 2);
-    this.background.setScale(scale);
+    this.background.setDisplaySize(width, height);
   }
 
   private fitAtmosphereToCanvas() {

@@ -147,7 +147,9 @@ type NormalizedCombatSetup = {
   enemyIds?: EnemyDefinitionId[];
 };
 
-const normalizeCombatSetup = (setup: CharacterId | CombatSetup = "perfector"): NormalizedCombatSetup => {
+const defaultCharacterId: CharacterId = "yung";
+
+const normalizeCombatSetup = (setup: CharacterId | CombatSetup = defaultCharacterId): NormalizedCombatSetup => {
   if (typeof setup === "string") {
     return {
       characterId: setup,
@@ -156,12 +158,12 @@ const normalizeCombatSetup = (setup: CharacterId | CombatSetup = "perfector"): N
   }
 
   return {
-    characterId: setup.characterId ?? "perfector",
+    characterId: setup.characterId ?? defaultCharacterId,
     enemyIds: setup.enemyIds,
   };
 };
 
-export const createInitialCombatState = (setup: CharacterId | CombatSetup = "perfector"): CombatState => {
+export const createInitialCombatState = (setup: CharacterId | CombatSetup = defaultCharacterId): CombatState => {
   const { characterId, enemyIds } = normalizeCombatSetup(setup);
   const character = characterDefinitions[characterId];
   const deck = character.starterDeck.map(createCard);
@@ -423,7 +425,7 @@ const resolveReaction = (state: CombatState, result: ReactionResult, damage = 10
 export const combatReducer = (state: CombatState, action: CombatAction): CombatState => {
   if (action.type === "RESET_COMBAT") {
     return createInitialCombatState({
-      characterId: action.characterId ?? state?.player.characterId ?? "perfector",
+      characterId: action.characterId ?? state?.player.characterId ?? defaultCharacterId,
       enemyIds: action.enemyIds,
     });
   }

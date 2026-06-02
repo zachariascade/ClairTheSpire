@@ -1,4 +1,4 @@
-export type CharacterId = "perfector" | "fencer";
+export type CharacterId = "rev" | "eirene" | "yung" | "sig";
 
 export type StanceId = "neutral" | "offensive" | "virtuoso" | "defensive";
 export type PerfectionRank = "D" | "C" | "B" | "A" | "S";
